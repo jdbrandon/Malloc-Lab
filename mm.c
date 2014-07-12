@@ -255,9 +255,7 @@ void *malloc (size_t size) {
     
     size = (size + 7) & ~7; //align size to next 8 byte slot
     size >>= 2;//size in 4 byte chunks
-//fprintf(stdout,"malloc:%zd ",size);
     p = last_allocated;
-    //p= (uint32_t*) prolog;
     p = block_next(p);
     while(p != epilog){
         if((block_size(p) >= size) && block_free(p)){
@@ -288,7 +286,7 @@ void *malloc (size_t size) {
     last_allocated = block_prev(tmp);
     coalesce(tmp);
     if(mem_heapsize() <= -1u){
-        //fprintf(stdout,"recurring\n");
+        fprintf(stderr,"recurring\n");
         return malloc(size<<2);
     }
     return NULL;
@@ -324,6 +322,12 @@ void* found(uint32_t *p, size_t size){
     checkheap(1); //make sure things are okay after allocation
     return block_mem(p);
 }
+/* p - header of a block in memory
+ * oldBlockSize - size p used to be
+ *
+ * context: P has had its value set to a new size so temp is
+ * the header of a new block that follows p.
+ * */
 void carve(uint32_t *p, size_t oldBlockSize){
     uint32_t *tmp;
 //fprintf(stdout,"carve: newsz:%d, oldsz:%zd\n", block_size(p),oldBlockSize);
@@ -341,7 +345,6 @@ void free (void *ptr) {
 
     }
     uint32_t *head = ((uint32_t*)ptr)-1;
-    //fprintf(stdout,"\t\tfree:%p %d\n",ptr,block_size(head));
     checkheap(1);
     block_mark(head,1);
     coalesce(head);
@@ -388,21 +391,21 @@ void *realloc(void *oldptr, size_t size) {
         return malloc(size);
     oldhead = (uint32_t*)oldptr - 1;
     oldsize = block_size(oldhead);
-    fprintf(stdout,"realloc: %p[%zd], %zd\n",oldptr,oldsize, size>>2);
     if(oldsize == (size>>2))
         return oldptr; 
+    newptr = malloc(size);
 
     if(oldsize > (size>>2)){
         //copy first size bytes of oldptr to newptr
-        oldhead[0] = (size>>2) | (oldhead[0] & PALLOC);
+        memcpy(newptr,oldptr,size);
+        /*oldhead[0] = (size>>2) | (oldhead[0] & PALLOC);
         carve(oldhead, oldsize);
-        newptr = block_mem(oldhead);
+        newptr = block_mem(oldhead);*/
     } else {
-        newptr = malloc(size);
         //copy first oldSize bytes of oldptr to newptr
         memcpy(newptr,oldptr, oldsize<<2);
-        free(oldptr);
     }
+    free(oldptr);
     return newptr;
 }
 
@@ -416,7 +419,6 @@ void *calloc (size_t nmemb, size_t size) {
     memset(newptr, 0, nmemb * size);
     return newptr;
 }
-char goodState[10000];
 // Returns 0 if no errors were found, otherwise returns the error
 int mm_checkheap(int verbose) {
     uint32_t *p, *prev, *next;
@@ -439,19 +441,14 @@ int mm_checkheap(int verbose) {
     }
     
     p = (uint32_t*)prolog;
-    char heapState[10000];
-    char buf[15];
-heapState[0]=0;
-    while(p != epilog){
-sprintf(buf,"[%d %c]",block_size(p),block_free(p)?'f':'a');
-strcat(heapState,buf);
+    while(p != epilog && in_heap(p)){
         if(!aligned(p+1)){
             if(verbose) fprintf(stderr,"block not aligned\n");
+            fprintf(stderr,"p+1:%p\n",(void*)(p+1));
             return 1;
         }
         if(p[0]!=p[block_size(p)+1]){
             if(verbose) fprintf(stderr,"header footer mismatch\n");
-            fprintf(stderr,"%s\n%s\n",goodState,heapState);
             fprintf(stderr,"hs:%d fs:%d\n",block_size(&p[0]), block_size(&p[block_size(p)+1]));
             return 1;
         }
@@ -473,7 +470,6 @@ strcat(heapState,buf);
         }
         p = block_next(p);
     }
-       // fprintf(stderr,"%s\n",heapState);
-    strcpy(goodState, heapState);
+    if(!in_heap(p)) {fprintf(stderr,"somethings fucky\n"); return 1;}
     return 0;
 }
