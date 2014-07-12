@@ -53,12 +53,10 @@
 #define PALLOC (1<<31)
 #define PACKMASK (NALLOC | PALLOC | ALLOC)
 #define LIMIT (0x6400000u)
-#define WORD 4
-#define DUB (WORD << 1)
 void coalesce(uint32_t*);
 void combine(uint32_t*, uint32_t*);
-void* found(uint32_t*, size_t);
-void carve(uint32_t*, size_t);
+static inline void* found(uint32_t*, const size_t);
+static inline void carve(uint32_t*, const size_t);
 void printheap(void);
 static inline uint32_t* block_next(uint32_t* const);
 static inline uint32_t* block_prev(uint32_t* const);
@@ -68,15 +66,6 @@ static void* prolog;
 static void* epilog;
 static uint32_t* last_allocated;
 size_t incr = 1<<12;
-
-struct fnode{
-    struct fnode *prev;
-    struct fnode *next;
-    void* val;
-};
-typedef struct fnode fnode;
-
-fnode *freelist = NULL;
 
 /*
  *  Helper functions
@@ -315,7 +304,7 @@ void *malloc (size_t size) {
     return NULL; //shouldn't ever reach here
 }
 
-void* found(uint32_t *p, size_t size){
+static inline void* found(uint32_t *p, const size_t size){
     //suitable block found
     size_t oldBlockSize;
     oldBlockSize = block_size(p);
@@ -339,7 +328,7 @@ void* found(uint32_t *p, size_t size){
  * context: P has had its value set to a new size so temp is
  * the header of a new block that follows p.
  * */
-void carve(uint32_t *p, size_t oldBlockSize){
+static inline void carve(uint32_t *p, const size_t oldBlockSize){
     uint32_t *tmp;
 //fprintf(stdout,"carve: newsz:%d, oldsz:%zd\n", block_size(p),oldBlockSize);
     tmp = block_next(p);
