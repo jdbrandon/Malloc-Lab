@@ -254,7 +254,6 @@ int mm_init(void) {
 void *malloc (size_t size) {
     uint32_t *p;
     checkheap(1);  // Let's make sure the heap is ok!
-    if(size + mem_heapsize() > LIMIT) return NULL; 
     size = (size + 7) & ~7; //align size to next 8 byte slot
     size >>= 2;//size in 4 byte chunks
     p = last_allocated;
