@@ -65,7 +65,7 @@ static inline void mark_next(uint32_t*, int);
 static void* prolog;
 static void* epilog;
 static uint32_t* last_allocated;
-size_t incr = 1<<11;
+size_t incr = 1<<20;
 
 struct fnode{
     struct fnode *prev;
@@ -224,7 +224,7 @@ int mm_init(void) {
     uint32_t *tmp, t;
     res = mem_sbrk(incr);
     if((long)res == -1){
-        fprintf(stderr,"mem_sbrk failed\n");
+        fprintf(stderr,"mem_sbrk failed!!!1!\n");
         exit(1);
     }
     prolog = (void*)((long)mem_heap_lo()+4);
@@ -272,24 +272,36 @@ void *malloc (size_t size) {
     }
     
     //no suitable block found in current heap call sbrk
-    if(mem_sbrk(incr)==(void*)-1){
+    size_t up = size<<3;
+    if(up + mem_heapsize() > -1u)
+        up = incr;
+    if(up + mem_heapsize() > -1u)
+        up = (size<<2) + 8;
+    if(mem_sbrk(up)==(void*)-1){
         fprintf(stderr,"mem_sbrk failed\n");
         exit(1);
     }
     //update Epilog
     uint32_t *tmp = (uint32_t*)epilog;
-    *tmp = ((incr>>2)-2) | (*tmp & PACKMASK);//this is correct
+    *tmp = ((up>>2)-2) | (*tmp & PACKMASK);//this is correct
     epilog = (void*)((long)mem_heap_hi()-3);
     ((uint32_t*)epilog)[0] = 0;
     block_mark(tmp,1);
     block_mark((uint32_t*)epilog, 0);
     last_allocated = block_prev(tmp);
     coalesce(tmp);
-    if(mem_heapsize() <= -1u){
-        fprintf(stderr,"recurring\n");
-        return malloc(size<<2);
+    if(mem_heapsize() > -1u){
+        return NULL;
     }
-    return NULL;
+    p = block_next(last_allocated);
+    while(in_heap(p)){
+        if((block_size(p) >= size) && block_free(p)){
+            return found(p, size);
+        }
+        p = block_next(p);
+    }
+fprintf(stderr,"something is fucky\n");
+return NULL;
 
     //search free list for a block that will satisfy size
     
