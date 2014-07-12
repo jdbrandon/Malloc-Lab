@@ -52,12 +52,14 @@
 #define NALLOC 1
 #define PALLOC (1<<31)
 #define PACKMASK (NALLOC | PALLOC | ALLOC)
+#define LIMIT (0x6400000u)
 #define WORD 4
 #define DUB (WORD << 1)
 void coalesce(uint32_t*);
 void combine(uint32_t*, uint32_t*);
 void* found(uint32_t*, size_t);
 void carve(uint32_t*, size_t);
+void printheap(void);
 static inline uint32_t* block_next(uint32_t* const);
 static inline uint32_t* block_prev(uint32_t* const);
 static inline void mark_prev(uint32_t*, int);
@@ -65,7 +67,7 @@ static inline void mark_next(uint32_t*, int);
 static void* prolog;
 static void* epilog;
 static uint32_t* last_allocated;
-size_t incr = 1<<20;
+size_t incr = 1<<12;
 
 struct fnode{
     struct fnode *prev;
@@ -224,7 +226,7 @@ int mm_init(void) {
     uint32_t *tmp, t;
     res = mem_sbrk(incr);
     if((long)res == -1){
-        fprintf(stderr,"mem_sbrk failed!!!1!\n");
+        fprintf(stderr,"mem_sbrk failed\n");
         exit(1);
     }
     prolog = (void*)((long)mem_heap_lo()+4);
@@ -252,7 +254,7 @@ int mm_init(void) {
 void *malloc (size_t size) {
     uint32_t *p;
     checkheap(1);  // Let's make sure the heap is ok!
-    
+    if(size + mem_heapsize() > LIMIT) return NULL; 
     size = (size + 7) & ~7; //align size to next 8 byte slot
     size >>= 2;//size in 4 byte chunks
     p = last_allocated;
@@ -272,13 +274,14 @@ void *malloc (size_t size) {
     }
     
     //no suitable block found in current heap call sbrk
-    size_t up = size<<3;
-    if(up + mem_heapsize() > -1u)
-        up = incr;
-    if(up + mem_heapsize() > -1u)
-        up = (size<<2) + 8;
+    size_t up = (size<<3);
+    if((up + mem_heapsize()) > LIMIT)
+        up = (size<<2)+incr;
+    if((up + mem_heapsize()) > LIMIT)
+        up = (size<<2)+8;
     if(mem_sbrk(up)==(void*)-1){
         fprintf(stderr,"mem_sbrk failed\n");
+        fprintf(stderr,"%zx\n",mem_heapsize()+up);
         exit(1);
     }
     //update Epilog
@@ -290,9 +293,7 @@ void *malloc (size_t size) {
     block_mark((uint32_t*)epilog, 0);
     last_allocated = block_prev(tmp);
     coalesce(tmp);
-    if(mem_heapsize() > -1u){
-        return NULL;
-    }
+
     p = block_next(last_allocated);
     while(in_heap(p)){
         if((block_size(p) >= size) && block_free(p)){
@@ -300,8 +301,6 @@ void *malloc (size_t size) {
         }
         p = block_next(p);
     }
-fprintf(stderr,"something is fucky\n");
-return NULL;
 
     //search free list for a block that will satisfy size
     
@@ -314,6 +313,7 @@ return NULL;
     //After more memory is alocated get the pointer, carve the
     //chunk remaining out, and place back on free list 
     //and return the pointer
+    return NULL; //shouldn't ever reach here
 }
 
 void* found(uint32_t *p, size_t size){
@@ -484,4 +484,12 @@ int mm_checkheap(int verbose) {
     }
     if(!in_heap(p)) {fprintf(stderr,"somethings fucky\n"); return 1;}
     return 0;
+}
+void printheap(){
+    uint32_t *p = (uint32_t*)prolog;
+    while(p != epilog){
+        fprintf(stdout,"[%d %c]",block_size(p), block_free(p)?'f':'a');
+        p = block_next(p);
+    }
+    fprintf(stdout,"\n");
 }
