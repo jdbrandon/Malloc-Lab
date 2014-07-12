@@ -51,6 +51,7 @@
 #define ALLOC (1<<30)
 #define NALLOC 1
 #define PALLOC (1<<31)
+#define PACKMASK (NALLOC | PALLOC | ALLOC)
 #define WORD 4
 #define DUB (WORD << 1)
 void coalesce(uint32_t*);
@@ -307,7 +308,7 @@ void* found(uint32_t *p, size_t size){
     //suitable block found
     size_t oldBlockSize;
     oldBlockSize = block_size(p);
-    p[0] = size;
+    p[0] = size | (p[0] & PACKMASK);
     if(p[0] != oldBlockSize){
         //carve out remaining part of block
         carve(p, oldBlockSize);
@@ -322,7 +323,7 @@ void* found(uint32_t *p, size_t size){
 void carve(uint32_t *p, size_t oldBlockSize){
     uint32_t *tmp;
     tmp = block_next(p);
-    tmp[0] = oldBlockSize - p[0] - 2;
+    tmp[0] = (oldBlockSize - p[0] - 2) | (tmp[0] & PACKMASK);
     block_mark(tmp, 1);
 }
 /*
@@ -358,7 +359,7 @@ void coalesce(uint32_t* head){
 void combine(uint32_t *p, uint32_t *n){
     size_t newSize;
     newSize = block_size(p)+block_size(n)+2;
-    p[0] = newSize | (p[0] & 0x80000000) | (n[0] & 0x1);
+    p[0] = newSize | (p[0] & PALLOC) | (n[0] & NALLOC);
     block_mark(p,1);
 }
 
