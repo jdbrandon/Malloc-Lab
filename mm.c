@@ -309,9 +309,10 @@ void* found(uint32_t *p, size_t size){
     size_t oldBlockSize;
     oldBlockSize = block_size(p);
     p[0] = size | (p[0] & PACKMASK);
-    if(p[0] != oldBlockSize){
+    if(size != oldBlockSize){
         //carve out remaining part of block
         carve(p, oldBlockSize);
+        p[0]&=~NALLOC;
     }
     block_mark(p, 0);
     //allocate and return
@@ -323,7 +324,7 @@ void* found(uint32_t *p, size_t size){
 void carve(uint32_t *p, size_t oldBlockSize){
     uint32_t *tmp;
     tmp = block_next(p);
-    tmp[0] = (oldBlockSize - p[0] - 2) | (tmp[0] & PACKMASK);
+    tmp[0] = (oldBlockSize - block_size(p) - 2) | (p[0] & NALLOC);
     block_mark(tmp, 1);
 }
 /*
@@ -410,7 +411,7 @@ void *calloc (size_t nmemb, size_t size) {
 
 // Returns 0 if no errors were found, otherwise returns the error
 int mm_checkheap(int verbose) {
-    uint32_t *p;
+    uint32_t *p, *prev, *next;
     if(prolog != (void*)((long)mem_heap_lo()+4)){
         if(verbose) fprintf(stderr,"prolog corrupt\n");
         return 1;
@@ -431,13 +432,28 @@ int mm_checkheap(int verbose) {
     
     p = (uint32_t*)prolog;
     while(p != epilog){
+fprintf(stderr,"[%d %c]",block_size(p),block_free(p)?'f':'a');
         if(!aligned(p+1)){
             if(verbose) fprintf(stderr,"block not aligned\n");
             return 1;
         }
-fprintf(stderr,"[%d free:%d]",block_size(p),block_free(p));
         if(p[0]!=p[block_size(p)+1]){
             if(verbose) fprintf(stderr,"header footer mismatch\n");
+            return 1;
+        }
+        next = block_next(p);
+        prev = block_prev(p);
+        if(in_heap(next) && (next_free(p) ^ block_free(next))){
+            if(verbose) fprintf(stderr,"bitpack: NALLOC incorrect\n");
+            fprintf(stderr,"bitpack:%d, actual:%d\n",next_free(p),block_free(next));
+            return 1;
+        }
+        if(in_heap(prev) && (prev_free(p) ^ block_free(prev))){
+            if(verbose) fprintf(stderr,"bitpack: PALLOC incorrect\n");
+            return 1;
+        }
+        if(in_heap(next) && block_free(p) && next_free(p)){
+            if(verbose) fprintf(stderr,"coalesce error: 2 adjacent free blocks\n");
             return 1;
         }
         p = block_next(p);
