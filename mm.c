@@ -404,19 +404,18 @@ void *realloc(void *oldptr, size_t size) {
     oldsize = block_size(oldhead);
     if(oldsize == (size>>2))
         return oldptr; 
-    newptr = malloc(size);
 
     if(oldsize > (size>>2)){
         //copy first size bytes of oldptr to newptr
-        memcpy(newptr,oldptr,size);
-        /*oldhead[0] = (size>>2) | (oldhead[0] & PALLOC);
+        oldhead[0] = (size>>2) | (oldhead[0] & PALLOC);
         carve(oldhead, oldsize);
-        newptr = block_mem(oldhead);*/
+        newptr = block_mem(oldhead);
     } else {
+        newptr = malloc(size);
         //copy first oldSize bytes of oldptr to newptr
         memcpy(newptr,oldptr, oldsize<<2);
+        free(oldptr);
     }
-    free(oldptr);
     return newptr;
 }
 
