@@ -255,14 +255,15 @@ void *malloc (size_t size) {
     
     size = (size + 7) & ~7; //align size to next 8 byte slot
     size >>= 2;//size in 4 byte chunks
-fprintf(stdout,"malloc:%zd ",size);
+//fprintf(stdout,"malloc:%zd ",size);
     p = last_allocated;
-    p = block_next((uint32_t* const)p);
-    while(in_heap((void*)p)){
+    //p= (uint32_t*) prolog;
+    p = block_next(p);
+    while(p != epilog){
         if((block_size(p) >= size) && block_free(p)){
             return found(p, size);
         }
-        p = block_next(p);
+        p = block_next(p); 
     }
     p = block_next((uint32_t*)prolog);
     while(p != last_allocated && in_heap((void*)p)){
@@ -278,15 +279,16 @@ fprintf(stdout,"malloc:%zd ",size);
         exit(1);
     }
     //update Epilog
-    *((uint32_t*)epilog)=(incr>>2)-2;//this is correct
-    block_mark(epilog,1);
-    coalesce(epilog);
+    uint32_t *tmp = (uint32_t*)epilog;
+    *tmp = ((incr>>2)-2) | (*tmp & PACKMASK);//this is correct
     epilog = (void*)((long)mem_heap_hi()-3);
-
     ((uint32_t*)epilog)[0] = 0;
+    block_mark(tmp,1);
     block_mark((uint32_t*)epilog, 0);
+    last_allocated = block_prev(tmp);
+    coalesce(tmp);
     if(mem_heapsize() <= -1u){
-        fprintf(stdout,"recurring\n");
+        //fprintf(stdout,"recurring\n");
         return malloc(size<<2);
     }
     return NULL;
@@ -308,23 +310,26 @@ void* found(uint32_t *p, size_t size){
     //suitable block found
     size_t oldBlockSize;
     oldBlockSize = block_size(p);
-    p[0] = size | (p[0] & PACKMASK);
     if(size != oldBlockSize){
         //carve out remaining part of block
+        p[0] = size | (p[0] & PACKMASK);
         carve(p, oldBlockSize);
         p[0]&=~NALLOC;
+    } else {
+        block_mark(p, 0);
     }
-    block_mark(p, 0);
     //allocate and return
     last_allocated = p;
+    //fprintf(stdout,"%p\n",(void*)block_mem(p));
     checkheap(1); //make sure things are okay after allocation
-    fprintf(stdout,"%p\n",(void*)block_mem(p));
     return block_mem(p);
 }
 void carve(uint32_t *p, size_t oldBlockSize){
     uint32_t *tmp;
+//fprintf(stdout,"carve: newsz:%d, oldsz:%zd\n", block_size(p),oldBlockSize);
     tmp = block_next(p);
     tmp[0] = (oldBlockSize - block_size(p) - 2) | (p[0] & NALLOC);
+    block_mark(p, 0);
     block_mark(tmp, 1);
 }
 /*
@@ -333,9 +338,10 @@ void carve(uint32_t *p, size_t oldBlockSize){
 void free (void *ptr) {
     if (ptr == NULL) {
         return;
+
     }
     uint32_t *head = ((uint32_t*)ptr)-1;
-    fprintf(stdout,"free:%p %d\n",ptr,block_size(head));
+    //fprintf(stdout,"\t\tfree:%p %d\n",ptr,block_size(head));
     checkheap(1);
     block_mark(head,1);
     coalesce(head);
@@ -348,13 +354,13 @@ void coalesce(uint32_t* head){
     void *prev, *next;
     prev = block_prev(head);
     next = block_next(head);
-    if(in_heap(prev))    
-        if(prev_free(head))
-            combine(prev, head);
 
     if(in_heap(next))
         if(next_free(head))
             combine(head, next);
+    if(in_heap(prev))    
+        if(prev_free(head))
+            combine(prev, head);
 }
 
 void combine(uint32_t *p, uint32_t *n){
@@ -362,40 +368,42 @@ void combine(uint32_t *p, uint32_t *n){
     newSize = block_size(p)+block_size(n)+2;
     p[0] = newSize | (p[0] & PALLOC) | (n[0] & NALLOC);
     block_mark(p,1);
+    if((last_allocated == n) || (last_allocated == p))
+        last_allocated = block_prev(p);
 }
 
 /*
  * realloc - you may want to look at mm-naive.c
  */
 void *realloc(void *oldptr, size_t size) {
-    void *newPtr;
-    size_t oldSize, i;
-    uint32_t *oPtr, *nPtr;
-    fprintf(stdout,"realloc: \n");
+    void *newptr;
+    size_t oldsize;
+    uint32_t *oldhead;
+    size = (size + 7) & ~0x7;
     if(size == 0){
         free(oldptr);
         return 0;
     }
     if(oldptr == NULL)
         return malloc(size);
-    oldSize = block_size(oldptr);
-    if(oldSize == size)
+    oldhead = (uint32_t*)oldptr - 1;
+    oldsize = block_size(oldhead);
+    fprintf(stdout,"realloc: %p[%zd], %zd\n",oldptr,oldsize, size>>2);
+    if(oldsize == (size>>2))
         return oldptr; 
 
-    newPtr = malloc(size);
-    oPtr = (uint32_t*) oldptr;
-    nPtr = (uint32_t*) newPtr;
-    if(oldSize > size){
-        //copy first size ints of oldptr to newptr
-        for(i=0; i<size; i++)
-            nPtr[i] = oPtr[i];
+    if(oldsize > (size>>2)){
+        //copy first size bytes of oldptr to newptr
+        oldhead[0] = (size>>2) | (oldhead[0] & PALLOC);
+        carve(oldhead, oldsize);
+        newptr = block_mem(oldhead);
     } else {
-        //copy first oldSize ints of oldptr to newptr
-        for(i=0; i<oldSize; i++)
-            nPtr[i] = oPtr[i];
+        newptr = malloc(size);
+        //copy first oldSize bytes of oldptr to newptr
+        memcpy(newptr,oldptr, oldsize<<2);
+        free(oldptr);
     }
-    free(oldptr);
-    return newPtr;
+    return newptr;
 }
 
 /*
@@ -408,7 +416,7 @@ void *calloc (size_t nmemb, size_t size) {
     memset(newptr, 0, nmemb * size);
     return newptr;
 }
-
+char goodState[10000];
 // Returns 0 if no errors were found, otherwise returns the error
 int mm_checkheap(int verbose) {
     uint32_t *p, *prev, *next;
@@ -431,14 +439,20 @@ int mm_checkheap(int verbose) {
     }
     
     p = (uint32_t*)prolog;
+    char heapState[10000];
+    char buf[15];
+heapState[0]=0;
     while(p != epilog){
-fprintf(stderr,"[%d %c]",block_size(p),block_free(p)?'f':'a');
+sprintf(buf,"[%d %c]",block_size(p),block_free(p)?'f':'a');
+strcat(heapState,buf);
         if(!aligned(p+1)){
             if(verbose) fprintf(stderr,"block not aligned\n");
             return 1;
         }
         if(p[0]!=p[block_size(p)+1]){
             if(verbose) fprintf(stderr,"header footer mismatch\n");
+            fprintf(stderr,"%s\n%s\n",goodState,heapState);
+            fprintf(stderr,"hs:%d fs:%d\n",block_size(&p[0]), block_size(&p[block_size(p)+1]));
             return 1;
         }
         next = block_next(p);
@@ -454,10 +468,12 @@ fprintf(stderr,"[%d %c]",block_size(p),block_free(p)?'f':'a');
         }
         if(in_heap(next) && block_free(p) && next_free(p)){
             if(verbose) fprintf(stderr,"coalesce error: 2 adjacent free blocks\n");
+            fprintf(stderr,"psz:%d, nsz:%d\n",block_size(p), block_size(next));
             return 1;
         }
         p = block_next(p);
     }
-fprintf(stderr,"\n");
+       // fprintf(stderr,"%s\n",heapState);
+    strcpy(goodState, heapState);
     return 0;
 }
