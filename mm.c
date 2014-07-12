@@ -53,7 +53,7 @@
 #define PALLOC (1<<31)
 #define WORD 4
 #define DUB (WORD << 1)
-void coalesce(void);
+void coalesce(uint32_t*);
 void combine(uint32_t*, uint32_t*);
 void* found(uint32_t*, size_t);
 void carve(uint32_t*, size_t);
@@ -127,7 +127,7 @@ static inline int block_free(const uint32_t* block) {
 static inline int next_free(const uint32_t* block) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
-    //REQUIRES(in_heap((void*)block_next(block)));
+    REQUIRES(in_heap(block_next((uint32_t* const)block)));
 
     return !(block[0] & 0x1);
 }
@@ -135,7 +135,7 @@ static inline int next_free(const uint32_t* block) {
 static inline int prev_free(const uint32_t* block) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
-    //REQUIRES(in_heap((void*)block_prev(block)));
+    REQUIRES(in_heap(block_prev((uint32_t* const)block)));
 
     return !(block[0] & 0x80000000);
 }
@@ -146,23 +146,22 @@ static inline int prev_free(const uint32_t* block) {
 static inline void block_mark(uint32_t* block, int free) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
-
     unsigned int next = block_size(block) + 1;
     block[0] = free ? block[0] & (int) 0xBFFFFFFF : block[0] | 0x40000000;
     block[next] = block[0];
     uint32_t* tmp = block_next(block);
-    if(in_heap((void*)tmp)){
+    if(in_heap(tmp)){
         mark_prev(tmp, free);
     }
-    if(in_heap(block_prev(block))){
-        mark_next(block_prev(block), free);
+    tmp = block_prev(block);
+    if(in_heap(tmp)){
+        mark_next(tmp, free);
     }
 }
 
 static inline void mark_next(uint32_t* block, int free){
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
-    REQUIRES(in_heap((void*)block_next(block)));
     
     unsigned next = block_size(block) + 1;
     block[0] = free ? block[0] & 0xfffffffe : block[0] | 0x1;
@@ -172,7 +171,6 @@ static inline void mark_next(uint32_t* block, int free){
 static inline void mark_prev(uint32_t* block, int free){
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
-    REQUIRES(in_heap((void*)block_prev(block)));
     
     unsigned next = block_size(block) + 1;
     block[0] = free ? block[0] & 0x7fffffff : block[0] | 0x80000000;
@@ -243,6 +241,7 @@ int mm_init(void) {
     *(tmp-1) = t; 			//set block footer
     //TODO:figure out if any thing else needs to be done here
     last_allocated = (uint32_t*)prolog;
+    mm_checkheap(1);
     return 0;
 }
 
@@ -254,18 +253,19 @@ void *malloc (size_t size) {
     checkheap(1);  // Let's make sure the heap is ok!
     
     size = (size + 7) & ~7; //align size to next 8 byte slot
-
+    size >>= 2;//size in 4 byte chunks
+fprintf(stdout,"malloc:%zd ",size);
     p = last_allocated;
     p = block_next((uint32_t* const)p);
     while(in_heap((void*)p)){
-        if(block_size(p) >= size && block_free(p)){
+        if((block_size(p) >= size) && block_free(p)){
             return found(p, size);
         }
         p = block_next(p);
     }
     p = block_next((uint32_t*)prolog);
     while(p != last_allocated && in_heap((void*)p)){
-        if(block_size(p) >= size && block_free(p)){
+        if((block_size(p) >= size) && block_free(p)){
             return found(p, size);
         }
         p = block_next(p);
@@ -277,15 +277,18 @@ void *malloc (size_t size) {
         exit(1);
     }
     //update Epilog
-    *((uint32_t*)epilog)=incr-2;
-    free((void*)((long)epilog+4));
+    *((uint32_t*)epilog)=(incr>>2)-2;//this is correct
+    block_mark(epilog,1);
+    coalesce(epilog);
     epilog = (void*)((long)mem_heap_hi()-3);
+
     ((uint32_t*)epilog)[0] = 0;
     block_mark((uint32_t*)epilog, 0);
-
-    if(mem_heapsize() <= -1u)
-        return malloc(size);
-    else return NULL;
+    if(mem_heapsize() <= -1u){
+        fprintf(stdout,"recurring\n");
+        return malloc(size<<2);
+    }
+    return NULL;
 
     //search free list for a block that will satisfy size
     
@@ -304,7 +307,7 @@ void* found(uint32_t *p, size_t size){
     //suitable block found
     size_t oldBlockSize;
     oldBlockSize = block_size(p);
-    p[0] = size >> 2;
+    p[0] = size;
     if(p[0] != oldBlockSize){
         //carve out remaining part of block
         carve(p, oldBlockSize);
@@ -313,6 +316,7 @@ void* found(uint32_t *p, size_t size){
     //allocate and return
     last_allocated = p;
     checkheap(1); //make sure things are okay after allocation
+    fprintf(stdout,"%p\n",(void*)block_mem(p));
     return block_mem(p);
 }
 void carve(uint32_t *p, size_t oldBlockSize){
@@ -329,36 +333,26 @@ void free (void *ptr) {
         return;
     }
     uint32_t *head = ((uint32_t*)ptr)-1;
+    fprintf(stdout,"free:%p %d\n",ptr,block_size(head));
+    checkheap(1);
     block_mark(head,1);
-
-    if(in_heap(block_prev(head)))    
-        if(prev_free(head))
-            combine(block_prev(head), head);
-
-    if(in_heap(block_next(head)))
-        if(next_free(head))
-            combine(head, block_next(head));
+    coalesce(head);
+    checkheap(1);
     //Use the header to free the block
     //and place the block in the free list
 }
 
-void coalesce(){
-    uint32_t *p, *next;
-    p = block_next((uint32_t*)prolog);
-    next = block_next(p);
-    while(next != epilog){
-        //traverse heap inline
-        //if p is free and next is free
-        //combine them into one block
-        //set next from new block and continue
-        if(block_free(p) && block_free(next)){
-            combine(p,next);
-            next = block_next(p);
-            continue;
-        }
-        p = next;
-        next = block_next(next);
-    }
+void coalesce(uint32_t* head){
+    void *prev, *next;
+    prev = block_prev(head);
+    next = block_next(head);
+    if(in_heap(prev))    
+        if(prev_free(head))
+            combine(prev, head);
+
+    if(in_heap(next))
+        if(next_free(head))
+            combine(head, next);
 }
 
 void combine(uint32_t *p, uint32_t *n){
@@ -375,6 +369,7 @@ void *realloc(void *oldptr, size_t size) {
     void *newPtr;
     size_t oldSize, i;
     uint32_t *oPtr, *nPtr;
+    fprintf(stdout,"realloc: \n");
     if(size == 0){
         free(oldptr);
         return 0;
@@ -405,6 +400,7 @@ void *realloc(void *oldptr, size_t size) {
  * calloc - you may want to look at mm-naive.c
  */
 void *calloc (size_t nmemb, size_t size) {
+    fprintf(stdout,"calloc:\n");
     void* newptr;
     newptr = malloc(nmemb * size);
     memset(newptr, 0, nmemb * size);
@@ -418,22 +414,33 @@ int mm_checkheap(int verbose) {
         if(verbose) fprintf(stderr,"prolog corrupt\n");
         return 1;
     }
+    if(block_size(prolog)!=0){
+        fprintf(stderr,"prolog value corrupt\n");
+        fprintf(stderr,"prolog:%p, sz:%d\n",prolog,block_size(prolog));
+        return 1;
+    }
     if(epilog != (void*)((long)mem_heap_hi()-3)){
         if(verbose) fprintf(stderr,"epilog corrupt\n");
+        return 1;
+    }
+    if(block_size(epilog)!=0){
+        fprintf(stderr,"epilog value corrupt\n");
         return 1;
     }
     
     p = (uint32_t*)prolog;
     while(p != epilog){
-        if(!aligned((void*)p)){
+        if(!aligned(p+1)){
             if(verbose) fprintf(stderr,"block not aligned\n");
             return 1;
         }
+fprintf(stderr,"[%d free:%d]",block_size(p),block_free(p));
         if(p[0]!=p[block_size(p)+1]){
             if(verbose) fprintf(stderr,"header footer mismatch\n");
+            return 1;
         }
         p = block_next(p);
     }
-    
+fprintf(stderr,"\n");
     return 0;
 }
