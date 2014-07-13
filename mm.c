@@ -53,19 +53,48 @@
 #define PALLOC (1<<31)
 #define PACKMASK (NALLOC | PALLOC | ALLOC)
 #define LIMIT (0x6400000u)
-void coalesce(uint32_t*);
+struct node {
+    uint32_t head;
+    struct node *prev;
+    struct node *next;
+};
+typedef struct node node;
+void* coalesce(uint32_t*);
 void combine(uint32_t*, uint32_t*);
 static inline void* found(uint32_t*, const size_t);
-static inline void carve(uint32_t*, const size_t);
+static inline void* carve(uint32_t*, const size_t);
 void printheap(void);
 static inline uint32_t* block_next(uint32_t* const);
 static inline uint32_t* block_prev(uint32_t* const);
 static inline void mark_prev(uint32_t*, int);
 static inline void mark_next(uint32_t*, int);
+static inline void flist_insert(node*);
+static inline void flist_delete(const node*);
 static void* prolog;
 static void* epilog;
-static uint32_t* last_allocated;
 size_t incr = 1<<12;
+
+static node* flist;
+
+static inline void flist_insert(node* n){
+    node* m = flist;
+    while(m->next && n>m)
+        m = m->next;
+    if(n>m){
+        m->next = n;
+        n->next = NULL;
+        n->prev = m;
+    } else {
+        n->next = m;
+        n->prev = m->prev;
+        m->prev = n;
+    }
+}
+
+static inline void flist_delete(const node* n){
+    n->next->prev = n->prev;
+    n->prev->next = n->next;
+}
 
 /*
  *  Helper functions
@@ -113,7 +142,7 @@ static inline int block_free(const uint32_t* block) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
 
-    return !(block[0] & 0x40000000);
+    return !(block[0] & ALLOC);
 }
 
 static inline int next_free(const uint32_t* block) {
@@ -121,7 +150,7 @@ static inline int next_free(const uint32_t* block) {
     REQUIRES(in_heap(block));
     REQUIRES(in_heap(block_next((uint32_t* const)block)));
 
-    return !(block[0] & 0x1);
+    return !(block[0] & NALLOC);
 }
 
 static inline int prev_free(const uint32_t* block) {
@@ -129,7 +158,7 @@ static inline int prev_free(const uint32_t* block) {
     REQUIRES(in_heap(block));
     REQUIRES(in_heap(block_prev((uint32_t* const)block)));
 
-    return !(block[0] & 0x80000000);
+    return !(block[0] & PALLOC);
 }
 
 // Mark the given block as free(0)/alloced(1) by marking the header and footer.
@@ -139,7 +168,7 @@ static inline void block_mark(uint32_t* block, int free) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
     unsigned int next = block_size(block) + 1;
-    block[0] = free ? block[0] & (int) 0xBFFFFFFF : block[0] | 0x40000000;
+    block[0] = free ? block[0] & (int) ~ALLOC : block[0] | ALLOC;
     block[next] = block[0];
     uint32_t* tmp = block_next(block);
     if(in_heap(tmp)){
@@ -156,7 +185,7 @@ static inline void mark_next(uint32_t* block, int free){
     REQUIRES(in_heap(block));
     
     unsigned next = block_size(block) + 1;
-    block[0] = free ? block[0] & 0xfffffffe : block[0] | 0x1;
+    block[0] = free ? block[0] & ~NALLOC : block[0] | NALLOC;
     block[next] = block[0];
 }
 
@@ -165,7 +194,7 @@ static inline void mark_prev(uint32_t* block, int free){
     REQUIRES(in_heap(block));
     
     unsigned next = block_size(block) + 1;
-    block[0] = free ? block[0] & 0x7fffffff : block[0] | 0x80000000;
+    block[0] = free ? block[0] & ~PALLOC : block[0] | PALLOC;
     block[next] = block[0];
 }
 
@@ -227,12 +256,15 @@ int mm_init(void) {
     *(tmp+1) = (uint32_t)0x0 | ALLOC;	//prolog footer
     t = ((mem_heapsize()>>2)-6) & ~ALLOC; //calculate size of initial block
     t = t | NALLOC | PALLOC;            //mark previous and next blocks alloced
-    *(tmp+2) = t;			//set block header
+    node* n = (node*)(tmp+2);
+    n->head = t;			//set block header
+    n->next = NULL;
+    n->prev = NULL;
+    flist = n;                          //init freelist
     tmp = (uint32_t*)epilog;
     *tmp = 0x0 | ALLOC;			//epilog is header only
     *(tmp-1) = t; 			//set block footer
     //TODO:figure out if any thing else needs to be done here
-    last_allocated = (uint32_t*)prolog;
     mm_checkheap(1);
     return 0;
 }
@@ -241,24 +273,17 @@ int mm_init(void) {
  * malloc
  */
 void *malloc (size_t size) {
-    uint32_t *p;
+    node *n;
     checkheap(1);  // Let's make sure the heap is ok!
+    size+=16;      // account for next and prev pointers
     size = (size + 7) & ~7; //align size to next 8 byte slot
     size >>= 2;//size in 4 byte chunks
-    p = last_allocated;
-    p = block_next(p);
-    while(p != epilog){
-        if((block_size(p) >= size) && block_free(p)){
-            return found(p, size);
+    n = flist;
+    while(n){
+        if((block_size((uint32_t*)n) >= size+8) && block_free((uint32_t*)n)){
+            return found((uint32_t*)n, size);
         }
-        p = block_next(p); 
-    }
-    p = block_next((uint32_t*)prolog);
-    while(p != last_allocated && in_heap((void*)p)){
-        if((block_size(p) >= size) && block_free(p)){
-            return found(p, size);
-        }
-        p = block_next(p);
+        n = n->next; 
     }
     
     //no suitable block found in current heap call sbrk
@@ -266,7 +291,9 @@ void *malloc (size_t size) {
     if((up + mem_heapsize()) > LIMIT)
         up = (size<<2)+incr;
     if((up + mem_heapsize()) > LIMIT)
-        up = (size<<2)+8;
+        up = (size<<2)+24;
+    if((up + mem_heapsize()) > LIMIT)
+        return NULL;
     if(mem_sbrk(up)==(void*)-1){
         fprintf(stderr,"mem_sbrk failed\n");
         fprintf(stderr,"%zx\n",mem_heapsize()+up);
@@ -279,15 +306,13 @@ void *malloc (size_t size) {
     ((uint32_t*)epilog)[0] = 0;
     block_mark(tmp,1);
     block_mark((uint32_t*)epilog, 0);
-    last_allocated = block_prev(tmp);
-    coalesce(tmp);
+    n = (node*) coalesce(tmp);
 
-    p = block_next(last_allocated);
-    while(in_heap(p)){
-        if((block_size(p) >= size) && block_free(p)){
-            return found(p, size);
+    while(n){
+        if((block_size((uint32_t*)n) >= size+8) && block_free((uint32_t*)n)){
+            return found((uint32_t*)n, size);
         }
-        p = block_next(p);
+        n = n->next;;
     }
 
     //search free list for a block that will satisfy size
@@ -314,11 +339,10 @@ static inline void* found(uint32_t *p, const size_t size){
         carve(p, oldBlockSize);
         p[0]&=~NALLOC;
     } else {
+        flist_delete((node*)p);
         block_mark(p, 0);
     }
     //allocate and return
-    last_allocated = p;
-    //fprintf(stdout,"%p\n",(void*)block_mem(p));
     checkheap(1); //make sure things are okay after allocation
     return block_mem(p);
 }
@@ -328,13 +352,18 @@ static inline void* found(uint32_t *p, const size_t size){
  * context: P has had its value set to a new size so temp is
  * the header of a new block that follows p.
  * */
-static inline void carve(uint32_t *p, const size_t oldBlockSize){
-    uint32_t *tmp;
-//fprintf(stdout,"carve: newsz:%d, oldsz:%zd\n", block_size(p),oldBlockSize);
-    tmp = block_next(p);
-    tmp[0] = (oldBlockSize - block_size(p) - 2) | (p[0] & NALLOC);
+static inline void* carve(uint32_t *p, const size_t oldBlockSize){
+    node *tmp, *pnode;
+    tmp = (node*) block_next(p);
+    tmp->head = (oldBlockSize - block_size(p) - 2) | (p[0] & NALLOC);
+    pnode = (node*)p;
+    tmp->next = pnode->next;
+    tmp->prev = pnode->prev;
+    pnode->next->prev = tmp;
+    pnode->prev->next = tmp;
     block_mark(p, 0);
-    block_mark(tmp, 1);
+    block_mark((uint32_t*)tmp, 1);
+    return tmp;
 }
 /*
  * free
@@ -347,13 +376,16 @@ void free (void *ptr) {
     uint32_t *head = ((uint32_t*)ptr)-1;
     checkheap(1);
     block_mark(head,1);
-    coalesce(head);
+    node* n = (node*) coalesce(head);
+    flist_insert(n);
     checkheap(1);
     //Use the header to free the block
     //and place the block in the free list
 }
 
-void coalesce(uint32_t* head){
+/* Returns - pointer to the newly combined block
+ */
+void* coalesce(uint32_t* head){
     void *prev, *next;
     prev = block_prev(head);
     next = block_next(head);
@@ -362,17 +394,21 @@ void coalesce(uint32_t* head){
         if(next_free(head))
             combine(head, next);
     if(in_heap(prev))    
-        if(prev_free(head))
+        if(prev_free(head)){
             combine(prev, head);
+            return prev;
+        }
+    return head;
 }
 
 void combine(uint32_t *p, uint32_t *n){
     size_t newSize;
+    node* new = (node*)p;
+    node* next = (node*)n;
     newSize = block_size(p)+block_size(n)+2;
-    p[0] = newSize | (p[0] & PALLOC) | (n[0] & NALLOC);
+    new->head = newSize | (new->head & PALLOC) | (next->head & NALLOC);
+    new->next = next->next;
     block_mark(p,1);
-    if((last_allocated == n) || (last_allocated == p))
-        last_allocated = block_prev(p);
 }
 
 /*
@@ -397,14 +433,14 @@ void *realloc(void *oldptr, size_t size) {
     if(oldsize > (size>>2)){
         //copy first size bytes of oldptr to newptr
         oldhead[0] = (size>>2) | (oldhead[0] & PALLOC);
-        carve(oldhead, oldsize);
-        newptr = block_mem(oldhead);
-    } else {
-        newptr = malloc(size);
-        //copy first oldSize bytes of oldptr to newptr
-        memcpy(newptr,oldptr, oldsize<<2);
-        free(oldptr);
+        node* n = (node*) carve(oldhead, oldsize);
+        flist_insert(n);
+        return oldptr;
     }
+    newptr = malloc(size);
+    //copy first oldSize bytes of oldptr to newptr
+    memcpy(newptr,oldptr, oldsize<<2);
+    free(oldptr);
     return newptr;
 }
 
@@ -469,7 +505,34 @@ int mm_checkheap(int verbose) {
         }
         p = block_next(p);
     }
-    if(!in_heap(p)) {fprintf(stderr,"somethings fucky\n"); return 1;}
+    node* n = flist;
+    while(n){
+        if(n->next){
+            if(n->next<n){
+                fprintf(stderr,"flist not sorted in address order\n");
+                return 1;
+            }
+            if(n->next->prev != n){
+                fprintf(stderr,"next elements previous element isn't this element\n");
+                return 1;
+            }
+        }
+        if(n->prev){
+            if(n->prev->next != n){
+                fprintf(stderr,"previous elements next element isn't this element\n");
+                return 1;
+            }
+        }
+        if(!block_free((uint32_t*)n)){
+            fprintf(stderr,"allocated block on the free list\n");
+            return 1;
+        }
+        if(!in_heap((uint32_t*)n)){
+            fprintf(stderr,"you dun goofed real good\n");
+            return 1;
+        }
+        n = n->next;
+    }
     return 0;
 }
 void printheap(){
