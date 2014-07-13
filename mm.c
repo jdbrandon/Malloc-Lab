@@ -59,8 +59,8 @@ struct node {
     struct node *next;
 };
 typedef struct node node;
-void* coalesce(uint32_t*);
-void combine(uint32_t*, uint32_t*);
+void* coalesce(uint32_t*, int*);
+void combine(uint32_t*, uint32_t*, int);
 static inline void* found(uint32_t*, const size_t);
 static inline void* carve(uint32_t*, const size_t);
 void printheap(void);
@@ -69,6 +69,7 @@ static inline uint32_t* block_prev(uint32_t* const);
 static inline void mark_prev(uint32_t*, int);
 static inline void mark_next(uint32_t*, int);
 static inline void flist_insert(node*);
+static inline void flist_update(const node*, node*);
 static inline void flist_delete(const node*);
 static void* prolog;
 static void* epilog;
@@ -88,12 +89,27 @@ static inline void flist_insert(node* n){
         n->next = m;
         n->prev = m->prev;
         m->prev = n;
+        if(n->prev)
+            n->prev->next = n;
+        if(m == flist)
+            flist = n;
     }
 }
 
+static inline void flist_update(const node* old, node* new){
+    if(old->next)
+        old->next->prev = new;
+    if(old->prev)
+        old->prev->next = new;
+    if(old == flist)
+        flist = new;
+}
+
 static inline void flist_delete(const node* n){
-    n->next->prev = n->prev;
-    n->prev->next = n->next;
+    if(n->next)
+        n->next->prev = n->prev;
+    if(n->prev)
+        n->prev->next = n->next;
 }
 
 /*
@@ -240,7 +256,6 @@ static inline uint32_t* block_next(uint32_t* const block) {
  */
 int mm_init(void) {
     //alocate some blocks so they are ready for the first malloc
-    fprintf(stdout,"init\n");
     void *res;
     uint32_t *tmp, t;
     res = mem_sbrk(incr);
@@ -275,13 +290,12 @@ int mm_init(void) {
  */
 void *malloc (size_t size) {
     node *n;
-    fprintf(stdout,"malloc\n");
     checkheap(1);  // Let's make sure the heap is ok!
     size = (size + 7) & ~7; //align size to next 8 byte slot
     size >>= 2;//size in 4 byte chunks
     if(size<6) size = 6;
     n = flist;
-    while(n){
+    while(n && in_heap((uint32_t*)n)){
         if((block_size((uint32_t*)n) >= size+8) && block_free((uint32_t*)n)){
             return found((uint32_t*)n, size);
         }
@@ -294,21 +308,23 @@ void *malloc (size_t size) {
         up = (size<<2)+incr;
     if((up + mem_heapsize()) > LIMIT)
         up = (size<<2)+24;
-    if((up + mem_heapsize()) > LIMIT)
+    if((up + mem_heapsize()) > LIMIT){
+        fprintf(stderr,"out of mem\n");
         return NULL;
+    }
     if(mem_sbrk(up)==(void*)-1){
         fprintf(stderr,"mem_sbrk failed\n");
         fprintf(stderr,"%zx\n",mem_heapsize()+up);
         exit(1);
     }
     //update Epilog
-    uint32_t *tmp = (uint32_t*)epilog;
-    *tmp = ((up>>2)-2) | (*tmp & PACKMASK);//this is correct
+    node *tmp = (node*)epilog;
+    tmp->head = ((up>>2)-2) | (tmp->head & PACKMASK);//this is correct
     epilog = (void*)((long)mem_heap_hi()-3);
     ((uint32_t*)epilog)[0] = 0;
-    block_mark(tmp,1);
+    block_mark((uint32_t*)tmp,1);
     block_mark((uint32_t*)epilog, 0);
-    n = (node*) coalesce(tmp);
+    n = (node*) coalesce((uint32_t*)tmp, NULL);//wants the pointer to the free block
 
     while(n){
         if((block_size((uint32_t*)n) >= size+8) && block_free((uint32_t*)n)){
@@ -328,6 +344,7 @@ void *malloc (size_t size) {
     //After more memory is alocated get the pointer, carve the
     //chunk remaining out, and place back on free list 
     //and return the pointer
+    fprintf(stderr,"bigerr\n");
     return NULL; //shouldn't ever reach here
 }
 
@@ -353,18 +370,19 @@ static inline void* found(uint32_t *p, const size_t size){
  *
  * context: P has had its value set to a new size so temp is
  * the header of a new block that follows p.
+ *
+ * returns - pointer to the free block
  * */
 static inline void* carve(uint32_t *p, const size_t oldBlockSize){
     node *tmp, *pnode;
     tmp = (node*) block_next(p);
     tmp->head = (oldBlockSize - block_size(p) - 2) | (p[0] & NALLOC);
-    pnode = (node*)p;
-    tmp->next = pnode->next;
-    tmp->prev = pnode->prev;
-    if(pnode->next)
-        pnode->next->prev = tmp;
-    if(pnode->prev)
-        pnode->prev->next = tmp;
+    if(block_free(p)){
+        pnode = (node*)p;
+        tmp->next = pnode->next;
+        tmp->prev = pnode->prev;
+        flist_update(pnode, tmp);
+    }
     block_mark(p, 0);
     block_mark((uint32_t*)tmp, 1);
     if(flist == pnode)
@@ -377,44 +395,60 @@ static inline void* carve(uint32_t *p, const size_t oldBlockSize){
 void free (void *ptr) {
     if (ptr == NULL) {
         return;
-
     }
     uint32_t *head = ((uint32_t*)ptr)-1;
+    int insert;
     checkheap(1);
     block_mark(head,1);
-    node* n = (node*) coalesce(head);
-    flist_insert(n);
+    node* n = (node*) coalesce(head, &insert);//wants pointer to insert in free list
+    if(insert)
+        flist_insert(n);
     checkheap(1);
     //Use the header to free the block
     //and place the block in the free list
-    fprintf(stdout,"free\n");
 }
 
-/* Returns - pointer to the newly combined block
+/* Returns - pointer to the newly combined block if it isnt in the list already
  */
-void* coalesce(uint32_t* head){
+void* coalesce(uint32_t* head, int* needToInsert){
     void *prev, *next;
     prev = block_prev(head);
     next = block_next(head);
-
+    if(needToInsert)
+        *needToInsert = 1;
     if(in_heap(next))
-        if(next_free(head))
-            combine(head, next);
+        if(next_free(head)){
+            combine(head, next, 1);
+            if(needToInsert)
+                *needToInsert = 0;
+        }
     if(in_heap(prev))    
         if(prev_free(head)){
-            combine(prev, head);
+            combine(prev, head, 0);
+            if(needToInsert)
+                *needToInsert = 0;
             return prev;
         }
     return head;
 }
 
-void combine(uint32_t *p, uint32_t *n){
+void combine(uint32_t *p, uint32_t *n, int pnew){
     size_t newSize;
-    node* new = (node*)p;
+    node* prev = (node*)p;
     node* next = (node*)n;
     newSize = block_size(p)+block_size(n)+2;
-    new->head = newSize | (new->head & PALLOC) | (next->head & NALLOC);
-    new->next = next->next;
+    prev->head = newSize | (prev->head & PALLOC) | (next->head & NALLOC);
+    if(pnew){
+        prev->next = next->next;
+        prev->prev = next->prev;
+        flist_update(next, prev);
+    } else {
+        if(prev->next == next){
+             prev->next = next->next; //prevents redundancies on free list
+             if(next->next)
+                 next->next->prev = prev;
+        }
+    }
     block_mark(p,1);
 }
 
@@ -425,7 +459,6 @@ void *realloc(void *oldptr, size_t size) {
     void *newptr;
     size_t oldsize;
     uint32_t *oldhead;
-    fprintf(stdout,"realloc\n");
     size = (size + 0x7) & ~0x7;
     if(size == 0){
         free(oldptr);
@@ -441,7 +474,7 @@ void *realloc(void *oldptr, size_t size) {
 
     if(oldsize > (size>>2)){
         //copy first size bytes of oldptr to newptr
-        oldhead[0] = (size>>2) | (oldhead[0] & PALLOC);
+        oldhead[0] = (size>>2) | (oldhead[0] & PACKMASK);
         node* n = (node*) carve(oldhead, oldsize);
         flist_insert(n);
         return oldptr;
@@ -457,7 +490,6 @@ void *realloc(void *oldptr, size_t size) {
  * calloc - you may want to look at mm-naive.c
  */
 void *calloc (size_t nmemb, size_t size) {
-    fprintf(stdout,"calloc:\n");
     void* newptr;
     newptr = malloc(nmemb * size);
     memset(newptr, 0, nmemb * size);
@@ -466,8 +498,6 @@ void *calloc (size_t nmemb, size_t size) {
 // Returns 0 if no errors were found, otherwise returns the error
 int mm_checkheap(int verbose) {
     uint32_t *p, *prev, *next;
-    void printheap(void);
-    printheap();
     if(prolog != (void*)((long)mem_heap_lo()+4)){
         if(verbose) fprintf(stderr,"prolog corrupt\n");
         return 1;
@@ -487,7 +517,6 @@ int mm_checkheap(int verbose) {
     }
     
     p = (uint32_t*)prolog;
-    int count=0;
     while(p != epilog && in_heap(p)){
         if(!aligned(p+1)){
             if(verbose) fprintf(stderr,"block not aligned\n");
@@ -497,7 +526,6 @@ int mm_checkheap(int verbose) {
         if(p[0]!=p[block_size(p)+1]){
             if(verbose) fprintf(stderr,"header footer mismatch\n");
             fprintf(stderr,"hs:%d fs:%d\n",block_size(&p[0]), block_size(&p[block_size(p)+1]));
-            fprintf(stderr,"header: prolog+%d\n",count);
             return 1;
         }
         next = block_next(p);
@@ -517,7 +545,6 @@ int mm_checkheap(int verbose) {
             return 1;
         }
         p = block_next(p);
-        count++;
     }
     node* n = flist;
     while(n){
@@ -552,8 +579,16 @@ int mm_checkheap(int verbose) {
 void printheap(){
     uint32_t *p = (uint32_t*)prolog;
     while(p != epilog){
-        fprintf(stdout,"[%d %c]",block_size(p), block_free(p)?'f':'a');
+        fprintf(stdout,"[%p %d %c]",(void*)p,block_size(p), block_free(p)?'f':'a');
         p = block_next(p);
+    }
+    fprintf(stdout,"\n");
+}
+void printflist(){
+    node* n = flist;
+    while(n){
+        fprintf(stdout,"{h:%p s:%d p:%p n:%p}",(void*)n, block_size((uint32_t*)n), (void*)n->prev, (void*)n->next);
+        n = n->next;
     }
     fprintf(stdout,"\n");
 }
