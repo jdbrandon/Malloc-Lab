@@ -240,6 +240,7 @@ static inline uint32_t* block_next(uint32_t* const block) {
  */
 int mm_init(void) {
     //alocate some blocks so they are ready for the first malloc
+    fprintf(stdout,"init\n");
     void *res;
     uint32_t *tmp, t;
     res = mem_sbrk(incr);
@@ -274,10 +275,11 @@ int mm_init(void) {
  */
 void *malloc (size_t size) {
     node *n;
+    fprintf(stdout,"malloc\n");
     checkheap(1);  // Let's make sure the heap is ok!
-    size+=16;      // account for next and prev pointers
     size = (size + 7) & ~7; //align size to next 8 byte slot
     size >>= 2;//size in 4 byte chunks
+    if(size<6) size = 6;
     n = flist;
     while(n){
         if((block_size((uint32_t*)n) >= size+8) && block_free((uint32_t*)n)){
@@ -359,10 +361,14 @@ static inline void* carve(uint32_t *p, const size_t oldBlockSize){
     pnode = (node*)p;
     tmp->next = pnode->next;
     tmp->prev = pnode->prev;
-    pnode->next->prev = tmp;
-    pnode->prev->next = tmp;
+    if(pnode->next)
+        pnode->next->prev = tmp;
+    if(pnode->prev)
+        pnode->prev->next = tmp;
     block_mark(p, 0);
     block_mark((uint32_t*)tmp, 1);
+    if(flist == pnode)
+        flist = tmp;
     return tmp;
 }
 /*
@@ -381,6 +387,7 @@ void free (void *ptr) {
     checkheap(1);
     //Use the header to free the block
     //and place the block in the free list
+    fprintf(stdout,"free\n");
 }
 
 /* Returns - pointer to the newly combined block
@@ -418,13 +425,15 @@ void *realloc(void *oldptr, size_t size) {
     void *newptr;
     size_t oldsize;
     uint32_t *oldhead;
-    size = (size + 7) & ~0x7;
+    fprintf(stdout,"realloc\n");
+    size = (size + 0x7) & ~0x7;
     if(size == 0){
         free(oldptr);
         return 0;
     }
     if(oldptr == NULL)
         return malloc(size);
+    if(size<16) size = 16;
     oldhead = (uint32_t*)oldptr - 1;
     oldsize = block_size(oldhead);
     if(oldsize == (size>>2))
@@ -457,6 +466,8 @@ void *calloc (size_t nmemb, size_t size) {
 // Returns 0 if no errors were found, otherwise returns the error
 int mm_checkheap(int verbose) {
     uint32_t *p, *prev, *next;
+    void printheap(void);
+    printheap();
     if(prolog != (void*)((long)mem_heap_lo()+4)){
         if(verbose) fprintf(stderr,"prolog corrupt\n");
         return 1;
@@ -476,6 +487,7 @@ int mm_checkheap(int verbose) {
     }
     
     p = (uint32_t*)prolog;
+    int count=0;
     while(p != epilog && in_heap(p)){
         if(!aligned(p+1)){
             if(verbose) fprintf(stderr,"block not aligned\n");
@@ -485,6 +497,7 @@ int mm_checkheap(int verbose) {
         if(p[0]!=p[block_size(p)+1]){
             if(verbose) fprintf(stderr,"header footer mismatch\n");
             fprintf(stderr,"hs:%d fs:%d\n",block_size(&p[0]), block_size(&p[block_size(p)+1]));
+            fprintf(stderr,"header: prolog+%d\n",count);
             return 1;
         }
         next = block_next(p);
@@ -504,6 +517,7 @@ int mm_checkheap(int verbose) {
             return 1;
         }
         p = block_next(p);
+        count++;
     }
     node* n = flist;
     while(n){
