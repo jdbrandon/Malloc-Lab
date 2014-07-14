@@ -78,22 +78,10 @@ size_t incr = 1<<11;
 static node* flist;
 
 static inline void flist_insert(node* n){
-    node* m = flist;
-    while(m->next && n>m)
-        m = m->next;
-    if(n>m){
-        m->next = n;
-        n->next = NULL;
-        n->prev = m;
-    } else {
-        n->next = m;
-        n->prev = m->prev;
-        m->prev = n;
-        if(n->prev)
-            n->prev->next = n;
-        if(m == flist)
-            flist = n;
-    }
+    n->next = flist;
+    n->prev = NULL;
+    flist->prev = n;
+    flist = n;
 }
 
 static inline void flist_update(const node* old, node* new){
