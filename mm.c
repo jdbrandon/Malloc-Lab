@@ -61,8 +61,8 @@ struct node {
 typedef struct node node;
 void* coalesce(uint32_t*, int*);
 void combine(uint32_t*, uint32_t*, int);
-static inline void* found(uint32_t*, const size_t);
-static inline void* carve(uint32_t*, const size_t);
+void* found(uint32_t*, const size_t);
+void* carve(uint32_t*, const size_t);
 void printheap(void);
 static inline uint32_t* block_next(uint32_t* const);
 static inline uint32_t* block_prev(uint32_t* const);
@@ -73,7 +73,7 @@ static inline void flist_update(const node*, node*);
 static inline void flist_delete(const node*);
 static void* prolog;
 static void* epilog;
-size_t incr = 1<<12;
+size_t incr = 1<<11;
 
 static node* flist;
 
@@ -186,6 +186,9 @@ static inline void block_mark(uint32_t* block, int free) {
     unsigned int next = block_size(block) + 1;
     block[0] = free ? block[0] & (int) ~ALLOC : block[0] | ALLOC;
     block[next] = block[0];
+
+    //consider removeing this section and implementing the logic elsewhere to increase
+    //throughput
     uint32_t* tmp = block_next(block);
     if(in_heap(tmp)){
         mark_prev(tmp, free);
@@ -296,18 +299,18 @@ void *malloc (size_t size) {
     if(size<6) size = 6;
     n = flist;
     while(n && in_heap((uint32_t*)n)){
-        if((block_size((uint32_t*)n) >= size+8) && block_free((uint32_t*)n)){
+        if(block_size((uint32_t*)n) >= size+8){
             return found((uint32_t*)n, size);
         }
         n = n->next; 
     }
     
     //no suitable block found in current heap call sbrk
-    size_t up = (size<<3);
+/*    size_t up = (size<<3);
     if((up + mem_heapsize()) > LIMIT)
         up = (size<<2)+incr;
-    if((up + mem_heapsize()) > LIMIT)
-        up = (size<<2)+24;
+    if((up + mem_heapsize()) > LIMIT)*/
+    size_t up = (size<<2)+24;
     if((up + mem_heapsize()) > LIMIT){
         fprintf(stderr,"out of mem\n");
         return NULL;
@@ -327,7 +330,7 @@ void *malloc (size_t size) {
     n = (node*) coalesce((uint32_t*)tmp, NULL);//wants the pointer to the free block
 
     while(n){
-        if((block_size((uint32_t*)n) >= size+8) && block_free((uint32_t*)n)){
+        if(block_size((uint32_t*)n) >= size+8){
             return found((uint32_t*)n, size);
         }
         n = n->next;;
@@ -344,11 +347,10 @@ void *malloc (size_t size) {
     //After more memory is alocated get the pointer, carve the
     //chunk remaining out, and place back on free list 
     //and return the pointer
-    fprintf(stderr,"bigerr\n");
     return NULL; //shouldn't ever reach here
 }
 
-static inline void* found(uint32_t *p, const size_t size){
+void* found(uint32_t *p, const size_t size){
     //suitable block found
     size_t oldBlockSize;
     oldBlockSize = block_size(p);
@@ -373,7 +375,7 @@ static inline void* found(uint32_t *p, const size_t size){
  *
  * returns - pointer to the free block
  * */
-static inline void* carve(uint32_t *p, const size_t oldBlockSize){
+void* carve(uint32_t *p, const size_t oldBlockSize){
     node *tmp, *pnode;
     tmp = (node*) block_next(p);
     tmp->head = (oldBlockSize - block_size(p) - 2) | (p[0] & NALLOC);
@@ -382,11 +384,11 @@ static inline void* carve(uint32_t *p, const size_t oldBlockSize){
         tmp->next = pnode->next;
         tmp->prev = pnode->prev;
         flist_update(pnode, tmp);
+        if(flist == pnode)
+            flist = tmp;
     }
     block_mark(p, 0);
     block_mark((uint32_t*)tmp, 1);
-    if(flist == pnode)
-        flist = tmp;
     return tmp;
 }
 /*
@@ -408,27 +410,23 @@ void free (void *ptr) {
     //and place the block in the free list
 }
 
-/* Returns - pointer to the newly combined block if it isnt in the list already
+/* Returns - pointer to the newly combined block
  */
 void* coalesce(uint32_t* head, int* needToInsert){
-    void *prev, *next;
-    prev = block_prev(head);
-    next = block_next(head);
+    uint32_t* prev;
     if(needToInsert)
         *needToInsert = 1;
-    if(in_heap(next))
-        if(next_free(head)){
-            combine(head, next, 1);
-            if(needToInsert)
-                *needToInsert = 0;
-        }
-    if(in_heap(prev))    
-        if(prev_free(head)){
-            combine(prev, head, 0);
-            if(needToInsert)
-                *needToInsert = 0;
-            return prev;
-        }
+    if(next_free(head)){
+        combine(head, block_next(head), 1);
+        if(needToInsert)
+            *needToInsert = 0;
+    }
+    if(prev_free(head)){
+        combine(prev = block_prev(head), head, 0);
+        if(needToInsert)
+            *needToInsert = 0;
+        return prev;
+    }
     return head;
 }
 
@@ -459,6 +457,8 @@ void *realloc(void *oldptr, size_t size) {
     void *newptr;
     size_t oldsize;
     uint32_t *oldhead;
+    int insert;
+    checkheap(1);
     size = (size + 0x7) & ~0x7;
     if(size == 0){
         free(oldptr);
@@ -466,23 +466,30 @@ void *realloc(void *oldptr, size_t size) {
     }
     if(oldptr == NULL)
         return malloc(size);
-    if(size<16) size = 16;
+    if(size<24) size = 24;
     oldhead = (uint32_t*)oldptr - 1;
     oldsize = block_size(oldhead);
     if(oldsize == (size>>2))
         return oldptr; 
 
+    //figure out if this is actually better than the the method
+    //in the given naieve source.
+
     if(oldsize > (size>>2)){
         //copy first size bytes of oldptr to newptr
-        oldhead[0] = (size>>2) | (oldhead[0] & PACKMASK);
+        oldhead[0] = (size>>2) | (oldhead[0] & (PALLOC|ALLOC));
         node* n = (node*) carve(oldhead, oldsize);
-        flist_insert(n);
+        coalesce((uint32_t*)n, &insert);
+        if(insert)
+            flist_insert(n);
+        checkheap(1);
         return oldptr;
     }
     newptr = malloc(size);
     //copy first oldSize bytes of oldptr to newptr
     memcpy(newptr,oldptr, oldsize<<2);
     free(oldptr);
+    checkheap(1);
     return newptr;
 }
 
