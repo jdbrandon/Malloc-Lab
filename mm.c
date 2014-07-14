@@ -78,26 +78,36 @@ size_t incr = 1<<11;
 static node* flist;
 
 static inline void flist_insert(node* n){
-    n->next = flist;
-    n->prev = NULL;
-    flist->prev = n;
-    flist = n;
+    if(flist){
+        n->next = flist;
+        n->prev = NULL;
+        flist->prev = n;
+        flist = n;
+    } else {
+        n->next = NULL;
+        n->prev = NULL;
+        flist = n;
+    }
 }
 
 static inline void flist_update(const node* old, node* new){
-    if(old->next)
-        old->next->prev = new;
-    if(old->prev)
-        old->prev->next = new;
-    if(old == flist)
-        flist = new;
+    if(new==old){
+        flist_delete(new);
+        flist_insert(new);
+    } else {
+        flist_insert(new);
+        flist_delete(old);
+    }
 }
 
 static inline void flist_delete(const node* n){
-    if(n->next)
-        n->next->prev = n->prev;
-    if(n->prev)
-        n->prev->next = n->next;
+    if(n){
+        if(n->next)
+            n->next->prev = n->prev;
+        if(n->prev)
+            n->prev->next = n->next;
+        else flist = n->next; //n equals flist, so update flist
+    }
 }
 
 /*
@@ -280,13 +290,14 @@ int mm_init(void) {
  * malloc
  */
 void *malloc (size_t size) {
+    printf("malloc\n");
     node *n;
     checkheap(1);  // Let's make sure the heap is ok!
     size = (size + 7) & ~7; //align size to next 8 byte slot
     size >>= 2;//size in 4 byte chunks
     if(size<6) size = 6;
     n = flist;
-    while(n && in_heap((uint32_t*)n)){
+    while(n){
         if(block_size((uint32_t*)n) >= size+8){
             return found((uint32_t*)n, size);
         }
@@ -321,7 +332,7 @@ void *malloc (size_t size) {
         if(block_size((uint32_t*)n) >= size+8){
             return found((uint32_t*)n, size);
         }
-        n = n->next;;
+        n = n->next;
     }
 
     //search free list for a block that will satisfy size
@@ -339,6 +350,7 @@ void *malloc (size_t size) {
 }
 
 void* found(uint32_t *p, const size_t size){
+printf("found\n");
     //suitable block found
     size_t oldBlockSize;
     oldBlockSize = block_size(p);
@@ -364,16 +376,19 @@ void* found(uint32_t *p, const size_t size){
  * returns - pointer to the free block
  * */
 void* carve(uint32_t *p, const size_t oldBlockSize){
+printf("carve\n");
     node *tmp, *pnode;
     tmp = (node*) block_next(p);
     tmp->head = (oldBlockSize - block_size(p) - 2) | (p[0] & NALLOC);
     if(block_free(p)){
+printf("blockfree\n");
+void printflist();
+printflist();
         pnode = (node*)p;
-        tmp->next = pnode->next;
-        tmp->prev = pnode->prev;
         flist_update(pnode, tmp);
-        if(flist == pnode)
-            flist = tmp;
+    } else {
+printf("else\n");
+        flist_insert(tmp);
     }
     block_mark(p, 0);
     block_mark((uint32_t*)tmp, 1);
@@ -383,6 +398,7 @@ void* carve(uint32_t *p, const size_t oldBlockSize){
  * free
  */
 void free (void *ptr) {
+printf("free\n");
     if (ptr == NULL) {
         return;
     }
@@ -425,15 +441,9 @@ void combine(uint32_t *p, uint32_t *n, int pnew){
     newSize = block_size(p)+block_size(n)+2;
     prev->head = newSize | (prev->head & PALLOC) | (next->head & NALLOC);
     if(pnew){
-        prev->next = next->next;
-        prev->prev = next->prev;
-        flist_update(next, prev);
+        flist_update(next, prev); //removes next inserts prev at front
     } else {
-        if(prev->next == next){
-             prev->next = next->next; //prevents redundancies on free list
-             if(next->next)
-                 next->next->prev = prev;
-        }
+        flist_update(prev, prev); //moves prev to front of list
     }
     block_mark(p,1);
 }
@@ -442,6 +452,7 @@ void combine(uint32_t *p, uint32_t *n, int pnew){
  * realloc - you may want to look at mm-naive.c
  */
 void *realloc(void *oldptr, size_t size) {
+printf("realloc\n");
     void *newptr;
     size_t oldsize, newsize;
     uint32_t *oldhead;
@@ -487,6 +498,7 @@ void *realloc(void *oldptr, size_t size) {
  * calloc - you may want to look at mm-naive.c
  */
 void *calloc (size_t nmemb, size_t size) {
+printf("calloc\n");
     void* newptr;
     newptr = malloc(nmemb * size);
     memset(newptr, 0, nmemb * size);
@@ -549,10 +561,6 @@ int mm_checkheap(int verbose) {
     node* n = flist;
     while(n){
         if(n->next){
-            if(n->next<n){
-                fprintf(stderr,"flist not sorted in address order\n");
-                return 1;
-            }
             if(n->next->prev != n){
                 fprintf(stderr,"next elements previous element isn't this element\n");
                 return 1;
