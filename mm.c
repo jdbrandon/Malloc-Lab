@@ -455,9 +455,8 @@ void combine(uint32_t *p, uint32_t *n, int pnew){
  */
 void *realloc(void *oldptr, size_t size) {
     void *newptr;
-    size_t oldsize;
+    size_t oldsize, newsize;
     uint32_t *oldhead;
-    int insert;
     checkheap(1);
     size = (size + 0x7) & ~0x7;
     if(size == 0){
@@ -467,27 +466,30 @@ void *realloc(void *oldptr, size_t size) {
     if(oldptr == NULL)
         return malloc(size);
     if(size<24) size = 24;
+    newsize = size>>2;
     oldhead = (uint32_t*)oldptr - 1;
     oldsize = block_size(oldhead);
-    if(oldsize == (size>>2))
+    if(oldsize == newsize)
         return oldptr; 
 
+    /*
     //figure out if this is actually better than the the method
     //in the given naieve source.
 
-    if(oldsize > (size>>2)){
+    if(oldsize > newsize){
         //copy first size bytes of oldptr to newptr
-        oldhead[0] = (size>>2) | (oldhead[0] & (PALLOC|ALLOC));
+        oldhead[0] = newsize | (oldhead[0] & (PALLOC|ALLOC));
         node* n = (node*) carve(oldhead, oldsize);
         coalesce((uint32_t*)n, &insert);
         if(insert)
             flist_insert(n);
         checkheap(1);
         return oldptr;
-    }
+    }*/
     newptr = malloc(size);
     //copy first oldSize bytes of oldptr to newptr
-    memcpy(newptr,oldptr, oldsize<<2);
+    oldsize = newsize < oldsize ? newsize<<2 : oldsize<<2;
+    memcpy(newptr,oldptr, oldsize);
     free(oldptr);
     checkheap(1);
     return newptr;
@@ -505,6 +507,7 @@ void *calloc (size_t nmemb, size_t size) {
 // Returns 0 if no errors were found, otherwise returns the error
 int mm_checkheap(int verbose) {
     uint32_t *p, *prev, *next;
+    int count = 0;
     if(prolog != (void*)((long)mem_heap_lo()+4)){
         if(verbose) fprintf(stderr,"prolog corrupt\n");
         return 1;
@@ -525,6 +528,8 @@ int mm_checkheap(int verbose) {
     
     p = (uint32_t*)prolog;
     while(p != epilog && in_heap(p)){
+        if(block_free(p)) 
+            count++;
         if(!aligned(p+1)){
             if(verbose) fprintf(stderr,"block not aligned\n");
             fprintf(stderr,"p+1:%p\n",(void*)(p+1));
@@ -580,6 +585,11 @@ int mm_checkheap(int verbose) {
             return 1;
         }
         n = n->next;
+        count--;
+    }
+    if(count){
+        fprintf(stderr,"Uh oh, %d free blocks not on free list\n",count);
+        return 1;
     }
     return 0;
 }
