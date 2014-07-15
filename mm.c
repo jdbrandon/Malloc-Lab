@@ -48,65 +48,74 @@
 #define checkheap(...)
 #endif
 
-#define ALLOC (1<<30)
-#define NALLOC 1
-#define PALLOC (1<<31)
-#define PACKMASK (NALLOC | PALLOC | ALLOC)
 #define LIMIT (0x6400000u)
 struct node {
-    uint32_t head;
+    size_t head; //larger than necessary for size but keeps alignment correct
     struct node *prev;
     struct node *next;
 };
 typedef struct node node;
-void* coalesce(uint32_t*, int*);
-void combine(uint32_t*, uint32_t*, int);
-void* found(uint32_t*, const size_t);
-void* carve(uint32_t*, const size_t);
+
 void printheap(void);
-static inline uint32_t* block_next(uint32_t* const);
-static inline uint32_t* block_prev(uint32_t* const);
-static inline void mark_prev(uint32_t*, int);
-static inline void mark_next(uint32_t*, int);
-static inline void flist_insert(node*);
-static inline void flist_update(const node*, node*);
-static inline void flist_delete(const node*);
-static void* prolog;
-static void* epilog;
-size_t incr = 1<<12;
+void printflist(void);
+static inline void flist_insert(node*, node**);
+static inline void flist_update(const node*, node*, node**);
+static inline void flist_delete(const node*, node**);
+static inline size_t block_size(const node*);
+static inline char block_class(const node*);
+static inline void add(node*);
+const char pow = 12;
+const size_t incr = 1 << pow;
 
-static node* flist;
+#define SIZEN 7
+#define SIZE11 6
+#define SIZE10 5
+#define SIZE9 4
+#define SIZE8 3
+#define SIZE7 2
+#define SIZE6 1
+#define SIZE5 0
 
-static inline void flist_insert(node* n){
-    if(flist){
-        n->next = flist;
+static node* flist5 = NULL;
+static node* flist6 = NULL;
+static node* flist7 = NULL;
+static node* flist8 = NULL;
+static node* flist9 = NULL;
+static node* flist10 = NULL;
+static node* flist11 = NULL;
+
+static n_node* flistn = NULL;
+
+static inline void flist_insert(node* n, node** list){
+    if(*list){
+        n->next = *list;
         n->prev = NULL;
-        flist->prev = n;
-        flist = n;
+        (*list)->prev = n;
+        *list = n;
     } else {
         n->next = NULL;
         n->prev = NULL;
-        flist = n;
+        *list = n;
     }
 }
 
-static inline void flist_update(const node* old, node* new){
+static inline void flist_update(const node* old, node* new, node** list){
     if(new==old){
-        flist_delete(new);
-        flist_insert(new);
+        flist_delete(new,list);
+        flist_insert(new,list);
     } else {
-        flist_insert(new);
-        flist_delete(old);
+        flist_insert(new,list);
+        flist_delete(old,list);
     }
 }
 
-static inline void flist_delete(const node* n){
+static inline void flist_delete(const node* n, node** list){
     if(n){
         if(n->next)
             n->next->prev = n->prev;
         if(n->prev)
             n->prev->next = n->next;
-        else flist = n->next; //n equals flist, so update flist
+        else *list = n->next; //n equals list head, so update list
     }
 }
 
@@ -130,121 +139,13 @@ static int in_heap(const void* p) {
     return p <= mem_heap_hi() && p >= mem_heap_lo();
 }
 
-
-/*
- *  Block Functions
- *  ---------------
- *  TODO: Add your comment describing block functions here.
- *  The functions below act similar to the macros in the book, but calculate
- *  size in multiples of 4 bytes.
- */
-
-// Return the size of the given block in multiples of the word size
-// returns least significant 30 bits which are used to represent size
-// of the block in multiples of 4
-// if 2 is returned block size is 8 bytes
-static inline unsigned int block_size(const uint32_t* block) {
-    REQUIRES(block != NULL);
-    REQUIRES(in_heap(block));
-
-    return (block[0] & 0x3FFFFFFE);
+static inline size_t block_size(const node* n){
+    return n->head & 0xfffffff8; 
 }
 
-// Return true if the block is free, false otherwise
-// Checks 30th (counting from 0) bit, if it is set the block is allocated 
-static inline int block_free(const uint32_t* block) {
-    REQUIRES(block != NULL);
-    REQUIRES(in_heap(block));
-
-    return !(block[0] & ALLOC);
+static inline char block_class(const node* n){
+    return (char) (n->head & 0x7);
 }
-
-static inline int next_free(const uint32_t* block) {
-    REQUIRES(block != NULL);
-    REQUIRES(in_heap(block));
-    REQUIRES(in_heap(block_next((uint32_t* const)block)));
-
-    return !(block[0] & NALLOC);
-}
-
-static inline int prev_free(const uint32_t* block) {
-    REQUIRES(block != NULL);
-    REQUIRES(in_heap(block));
-    REQUIRES(in_heap(block_prev((uint32_t* const)block)));
-
-    return !(block[0] & PALLOC);
-}
-
-// Mark the given block as free(0)/alloced(1) by marking the header and footer.
-// set 30th bit according to weather block is being marked as free or allocated
-// set header and footer
-static inline void block_mark(uint32_t* block, int free) {
-    REQUIRES(block != NULL);
-    REQUIRES(in_heap(block));
-    unsigned int next = block_size(block) + 1;
-    block[0] = free ? block[0] & (int) ~ALLOC : block[0] | ALLOC;
-    block[next] = block[0];
-
-    //consider removeing this section and implementing the logic elsewhere to increase
-    //throughput
-    uint32_t* tmp = block_next(block);
-    if(in_heap(tmp)){
-        mark_prev(tmp, free);
-    }
-    tmp = block_prev(block);
-    if(in_heap(tmp)){
-        mark_next(tmp, free);
-    }
-}
-
-static inline void mark_next(uint32_t* block, int free){
-    REQUIRES(block != NULL);
-    REQUIRES(in_heap(block));
-    
-    unsigned next = block_size(block) + 1;
-    block[0] = free ? block[0] & ~NALLOC : block[0] | NALLOC;
-    block[next] = block[0];
-}
-
-static inline void mark_prev(uint32_t* block, int free){
-    REQUIRES(block != NULL);
-    REQUIRES(in_heap(block));
-    
-    unsigned next = block_size(block) + 1;
-    block[0] = free ? block[0] & ~PALLOC : block[0] | PALLOC;
-    block[next] = block[0];
-}
-
-// Return a pointer to the memory malloc should return
-// using pointer arithmatic
-static inline uint32_t* block_mem(uint32_t* const block) {
-    REQUIRES(block != NULL);
-    REQUIRES(in_heap(block));
-    REQUIRES(aligned(block + 1));
-
-    return block + 1;
-}
-
-// Return the header to the previous block
-// subtract size of previous block from current block and then 2 
-// to account for header and footer
-static inline uint32_t* block_prev(uint32_t* const block) {
-    REQUIRES(block != NULL);
-    REQUIRES(in_heap(block));
-
-    return block - block_size(block - 1) - 2;
-}
-
-// Return the header to the next block
-// similarly add the size of the current block plus 2 to 
-// account for header and footer
-static inline uint32_t* block_next(uint32_t* const block) {
-    REQUIRES(block != NULL);
-    REQUIRES(in_heap(block));
-
-    return block + block_size(block) + 2;
-}
-
 
 /*
  *  Malloc Implementation
@@ -257,34 +158,57 @@ static inline uint32_t* block_next(uint32_t* const block) {
  */
 int mm_init(void) {
     //alocate some blocks so they are ready for the first malloc
-    void *res;
-    uint32_t *tmp, t;
-    res = mem_sbrk(incr);
-    if((long)res == -1){
-        fprintf(stderr,"mem_sbrk failed\n");
-        exit(1);
+    node* n;
+    size_t size = incr;
+    char p = pow;
+    long addr = (long) mem_sbrk(size);
+    while(size != 0x20){
+        size >>= 1;
+        n = (node*) (addr + size);
+        n->head = (size-8) | ((--p)-5); //(--p)-5 calculates size class 
+        add(n);
     }
-    prolog = (void*)((long)mem_heap_lo()+4);
-    epilog = (void*)((long)mem_heap_hi()-3);
-    //init prolog and epilog
-    tmp = (uint32_t*)prolog;
-    *(tmp-1) = 0x0;                     //4 byte padding
-    *tmp = (uint32_t)0x0 | ALLOC;	//allocate prolog header forever
-    *(tmp+1) = (uint32_t)0x0 | ALLOC;	//prolog footer
-    t = ((mem_heapsize()>>2)-6) & ~ALLOC; //calculate size of initial block
-    t = t | NALLOC | PALLOC;            //mark previous and next blocks alloced
-    node* n = (node*)(tmp+2);
-    n->head = t;			//set block header
-    n->next = NULL;
-    n->prev = NULL;
-    flist = n;                          //init freelist
-    tmp = (uint32_t*)epilog;
-    *tmp = 0x0 | ALLOC;			//epilog is header only
-    *(tmp-1) = t; 			//set block footer
-    //TODO:figure out if any thing else needs to be done here
-    mm_checkheap(1);
+    n = (node*) addr;
+    n->head = size - 8;
+    flist_insert(n);
+    
     return 0;
 }
+
+/* 
+ */
+static inline void add(node* n){
+    char s = block_class(n);
+    switch(s){
+    case SIZE5:
+        flist_insert(n, &flist5);
+        break;
+    case SIZE6:
+        flist_insert(n, &flist6);
+        break;
+    case SIZE7:
+        flist_insert(n, &flist7);
+        break;
+    case SIZE8:
+        flist_insert(n, &flist8);
+        break;
+    case SIZE9:
+        flist_insert(n, &flist9);
+        break;
+    case SIZE10:
+        flist_insert(n, &flist10);
+        break;
+    case SIZE11:
+        flist_insert(n, &flist11);
+        break;
+    case SIZEN:
+        flist_insert(n, &flistn);
+        break;
+    }
+}
+
+
+//TODO:Write Malloc free and such under new scheme
 
 /*
  * malloc
@@ -292,20 +216,23 @@ int mm_init(void) {
 void *malloc (size_t size) {
     node *n;
     checkheap(1);  // Let's make sure the heap is ok!
-    size = (size + 7) & ~7; //align size to next 8 byte slot
-    size >>= 2;//size in 4 byte chunks
-    if(size<6) size = 6;
+    size_t s = 64i, p=0;
+    while(s<size+8){
+        s<<=1;
+        p++;
+    }
+    size = s>>2;
     n = flist;
     while(n){
-        if(block_size((uint32_t*)n) >= size+8){
-            return found((uint32_t*)n, size);
+        if(block_size((uint32_t*)n) >= size+(8<<p)){
+            return found((uint32_t*)n, size+((8<<p)-8));
         }
         n = n->next; 
     }
     
     //no suitable block found in current heap call sbrk
     size_t up;
-    up = (size<<2)+24;
+    up = (size<<2) + 8;//change to 8 to 24 if this fails ever
     if((up + mem_heapsize()) > LIMIT){
         fprintf(stderr,"out of mem\n");
         return NULL;
@@ -350,7 +277,7 @@ void* found(uint32_t *p, const size_t size){
     size_t oldBlockSize;
     oldBlockSize = block_size(p);
     if(size != oldBlockSize){
-        //carve out remaining part of block
+        //split out remaining part of block
         p[0] = size | (p[0] & PACKMASK);
         carve(p, oldBlockSize);
         p[0]&=~NALLOC;
