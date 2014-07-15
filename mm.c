@@ -73,7 +73,7 @@ static inline void flist_update(const node*, node*);
 static inline void flist_delete(const node*);
 static void* prolog;
 static void* epilog;
-size_t incr = 1<<11;
+size_t incr = 1<<12;
 
 static node* flist;
 
@@ -290,7 +290,6 @@ int mm_init(void) {
  * malloc
  */
 void *malloc (size_t size) {
-    printf("malloc\n");
     node *n;
     checkheap(1);  // Let's make sure the heap is ok!
     size = (size + 7) & ~7; //align size to next 8 byte slot
@@ -305,11 +304,8 @@ void *malloc (size_t size) {
     }
     
     //no suitable block found in current heap call sbrk
-/*    size_t up = (size<<3);
-    if((up + mem_heapsize()) > LIMIT)
-        up = (size<<2)+incr;
-    if((up + mem_heapsize()) > LIMIT)*/
-    size_t up = (size<<2)+24;
+    size_t up;
+    up = (size<<2)+24;
     if((up + mem_heapsize()) > LIMIT){
         fprintf(stderr,"out of mem\n");
         return NULL;
@@ -350,7 +346,6 @@ void *malloc (size_t size) {
 }
 
 void* found(uint32_t *p, const size_t size){
-printf("found\n");
     //suitable block found
     size_t oldBlockSize;
     oldBlockSize = block_size(p);
@@ -376,18 +371,13 @@ printf("found\n");
  * returns - pointer to the free block
  * */
 void* carve(uint32_t *p, const size_t oldBlockSize){
-printf("carve\n");
     node *tmp, *pnode;
     tmp = (node*) block_next(p);
     tmp->head = (oldBlockSize - block_size(p) - 2) | (p[0] & NALLOC);
     if(block_free(p)){
-printf("blockfree\n");
-void printflist();
-printflist();
         pnode = (node*)p;
         flist_update(pnode, tmp);
     } else {
-printf("else\n");
         flist_insert(tmp);
     }
     block_mark(p, 0);
@@ -398,7 +388,6 @@ printf("else\n");
  * free
  */
 void free (void *ptr) {
-printf("free\n");
     if (ptr == NULL) {
         return;
     }
@@ -418,15 +407,17 @@ printf("free\n");
  */
 void* coalesce(uint32_t* head, int* needToInsert){
     uint32_t* prev;
+    int new = 1;
     if(needToInsert)
         *needToInsert = 1;
     if(next_free(head)){
-        combine(head, block_next(head), 1);
+        combine(head, block_next(head), new++);
         if(needToInsert)
             *needToInsert = 0;
     }
+    else{new =0;}
     if(prev_free(head)){
-        combine(prev = block_prev(head), head, 0);
+        combine(prev = block_prev(head), head, new);
         if(needToInsert)
             *needToInsert = 0;
         return prev;
@@ -434,15 +425,17 @@ void* coalesce(uint32_t* head, int* needToInsert){
     return head;
 }
 
-void combine(uint32_t *p, uint32_t *n, int pnew){
+void combine(uint32_t *p, uint32_t *n, int flag){
     size_t newSize;
     node* prev = (node*)p;
     node* next = (node*)n;
     newSize = block_size(p)+block_size(n)+2;
     prev->head = newSize | (prev->head & PALLOC) | (next->head & NALLOC);
-    if(pnew){
+    if(flag == 1){
         flist_update(next, prev); //removes next inserts prev at front
     } else {
+        if(flag == 2)
+            flist_delete(next);   //next and prev both need to be removed
         flist_update(prev, prev); //moves prev to front of list
     }
     block_mark(p,1);
@@ -452,7 +445,6 @@ void combine(uint32_t *p, uint32_t *n, int pnew){
  * realloc - you may want to look at mm-naive.c
  */
 void *realloc(void *oldptr, size_t size) {
-printf("realloc\n");
     void *newptr;
     size_t oldsize, newsize;
     uint32_t *oldhead;
@@ -498,7 +490,6 @@ printf("realloc\n");
  * calloc - you may want to look at mm-naive.c
  */
 void *calloc (size_t nmemb, size_t size) {
-printf("calloc\n");
     void* newptr;
     newptr = malloc(nmemb * size);
     memset(newptr, 0, nmemb * size);
