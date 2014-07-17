@@ -61,7 +61,8 @@ struct node {
 typedef struct node node;
 
 void printheap(void);
-void printflist(void);
+void printflist(char);
+void printallflist(void);
 static inline void flist_insert(node*, node**);
 static inline void flist_update(const node*, node*, node**);
 static inline void flist_delete(const node*, node**);
@@ -75,7 +76,7 @@ static inline void* found(node*, const char);
 static inline node* get_list(char);
 static inline node** get_list_addr(char);
 static inline char get_class(size_t);
-int check_flist(node*, char);
+int check_flist(node*, char, int*);
 node* split(char);
 static inline void do_split(node*, const char);
 const char power = 12;
@@ -97,7 +98,6 @@ static node* flist8 = NULL;
 static node* flist9 = NULL;
 static node* flist10 = NULL;
 static node* flist11 = NULL;
-
 static node* flistn = NULL;
 
 static inline void flist_insert(node* n, node** list){
@@ -179,7 +179,9 @@ static inline char block_class(const node* n){
 }
 
 static inline node* block_next(const node* n){
-    return (node*)((size_t)n + (1<<(block_class(n)+5)));
+    if(block_class(n) < SIZEN)
+        return (node*)((size_t)n + (1<<(block_class(n)+5)));
+    return (node*)((long) n + block_size(n) + 8);
     
 }
 static inline char block_free(const node* n){
@@ -201,6 +203,11 @@ int mm_init(void) {
     size_t size = incr;
     char p = power;
     long addr = (long) mem_sbrk(size);
+    flist5 = flist6 = flist7 = flist8 = flist9 = flist10 = flist11 = flistn = NULL;
+    if(addr == -1){
+        fprintf(stderr,"mm_init failed calling mem_sbrk\n");
+        return -1;
+    }
     while(size != 0x20){
         size >>= 1;
         n = (node*) (addr + size);
@@ -219,6 +226,7 @@ int mm_init(void) {
     n->b = 0;
     flist_insert(n, &flist5);
     
+    checkheap(1);
     return 0;
 }
 
@@ -297,13 +305,13 @@ void *malloc (size_t size) {
     if(p<7){
         //allocate any block on the list because it is the best size
         //for that request
-        size = 0x20 << p;
         if(n)
             return found(n, p);
         else {
             n = split(p+1);
             n->a = 1;
-            return (void*) n->prev;
+            checkheap(1);
+            return (void*) &n->prev;
         }
     }
     else{
@@ -324,7 +332,8 @@ void *malloc (size_t size) {
         }
         n->head = (up-8) | SIZEN; //dont acount for metadata when accounting for
         n->a = 1;                 //size of the allocation
-        return (void*) n->prev;
+        checkheap(1);
+        return (void*) &n->prev;
     }
     return NULL; //shouldn't ever reach here
 }
@@ -389,7 +398,7 @@ static inline node** get_list_addr(const char p){
 node* split(char class){
     node** listptr, *n;
     if(class < 1){
-        printf("\n\n\nsplit should never be called with a value less than 1!!\n\n\n");
+        fprintf(stderr,"\n\n\nsplit should never be called with a value less than 1!!\n\n\n");
         return NULL;
     }
     if(class > 6){
@@ -430,6 +439,7 @@ static inline void do_split(node* n, const char class){
     n->head = class-1;
     m = block_next(n);
     m->head = class-1;
+    m->a = 0;
     add(m);
 }
 
@@ -445,7 +455,8 @@ static inline void* found(node *n, const char class){
                       //are maintained appropriately
     n->a = 1;
     //TODO: see about marking next block
-    return (void*) n->prev;
+    checkheap(1);
+    return (void*) &n->prev;
 }
 
 /*
@@ -455,6 +466,7 @@ void free (void *ptr) {
     if (ptr == NULL) {
         return;
     }
+    checkheap(1);
     node *n = (node*)(((long)ptr)-8);
     //Use the header to free the block
     //and place the block in the free list
@@ -462,6 +474,7 @@ void free (void *ptr) {
     //purposefully dont coalesce in this implementation to
     //push throughput
     add(n);
+    checkheap(1);
 }
 /*
  * realloc - you may want to look at mm-naive.c
@@ -476,6 +489,7 @@ void *realloc(void *oldptr, size_t size) {
     }
     if(oldptr == NULL)
         return malloc(size);
+    checkheap(1);
     old = (node*)((long)oldptr - 8);
     if(block_class(old) == get_class(size))
         return oldptr; 
@@ -495,92 +509,144 @@ void *realloc(void *oldptr, size_t size) {
  */
 void *calloc (size_t nmemb, size_t size) {
     void* newptr;
+    checkheap(1);
     newptr = malloc(nmemb * size);
     memset(newptr, 0, nmemb * size);
+    checkheap(1);
     return newptr;
 }
 // Returns 0 if no errors were found, otherwise returns the error
 int mm_checkheap(int verbose) {
     node *p;
+    int count = 0;
     
     p = (node*) mem_heap_lo();
     while(in_heap(p)){
         if(!aligned(p)){
             if(verbose) fprintf(stderr,"block not aligned\n");
             fprintf(stderr,"p:%p\n",(void*)(p));
+            printheap();
             return 1;
         }
+        if(block_free(p))
+            count++;
         p = block_next(p);
     }
     int r;
-    r = check_flist(flist5,SIZE5);
+    r = check_flist(flist5,SIZE5, &count);
     if(r){
-       fprintf(stderr,"flist5 failed\n");
-       return 1;
+        fprintf(stderr,"flist5 failed\n");
+        return 1;
     }
-    r = check_flist(flist6,SIZE6);
+    r = check_flist(flist6,SIZE6, &count);
     if(r){
-       fprintf(stderr,"flist6 failed\n");
-       return 1;
+        fprintf(stderr,"flist6 failed\n");
+        return 1;
     }
-    r = check_flist(flist7,SIZE7);
+    r = check_flist(flist7,SIZE7, &count);
     if(r){
-       fprintf(stderr,"flist7 failed\n");
-       return 1;
+        fprintf(stderr,"flist7 failed\n");
+        return 1;
     }
-    r = check_flist(flist8,SIZE8);
+    r = check_flist(flist8,SIZE8, &count);
     if(r){
-       fprintf(stderr,"flist8 failed\n");
-       return 1;
+        fprintf(stderr,"flist8 failed\n");
+        return 1;
     }
-    r = check_flist(flist9,SIZE9);
+    r = check_flist(flist9,SIZE9, &count);
     if(r){
-       fprintf(stderr,"flist9 failed\n");
-       return 1;
+        fprintf(stderr,"flist9 failed\n");
+        return 1;
     }
-    r = check_flist(flist10,SIZE10);
+    r = check_flist(flist10,SIZE10, &count);
     if(r){
-       fprintf(stderr,"flist10 failed\n");
-       return 1;
+        fprintf(stderr,"flist10 failed\n");
+        return 1;
     }
-    r = check_flist(flist11,SIZE11);
+    r = check_flist(flist11,SIZE11, &count);
     if(r){
-       fprintf(stderr,"flist11 failed\n");
-       return 1;
+        fprintf(stderr,"flist11 failed\n");
+        return 1;
     }
-    r = check_flist(flistn,SIZEN);
+    r = check_flist(flistn,SIZEN, &count);
     if(r){
        fprintf(stderr,"flistn failed\n");
        return 1;
     }
+    if(count){
+        fprintf(stderr, "Uh oh %d free blocks in heap not on a list\n", count);
+        printheap();
+        printallflist();
+        return 1;
+    }
     return 0;
 }
 
-int check_flist(node* flist, char class){
+int check_flist(node* flist, char class, int* countptr){
     node* n = flist;
     class = class;
+    int count = *countptr;
     while(n){
         if(n->next){
             if(n->next->prev != n){
                 fprintf(stderr,"next elements previous element isn't this element\n");
+                printheap();
+                printflist(class);
+                return 1;
+            }
+            if(n->next == n){
+                fprintf(stderr,"blocks next element is its self\n");
                 return 1;
             }
         }
         if(n->prev){
             if(n->prev->next != n){
                 fprintf(stderr,"previous elements next element isn't this element\n");
+                printheap();
+                printflist(class);
                 return 1;
             }
         }
         if(!block_free(n)){
             fprintf(stderr,"allocated block on the free list\n");
+            printheap();
+            printflist(class);
             return 1;
         }
         if(!in_heap((uint32_t*)n)){
             fprintf(stderr,"you dun goofed real good\n");
+            printheap();
+            printflist(class);
             return 1;
         }
         n = n->next;
+        count--;
     }
+    *countptr = count;
     return 0;
+}
+
+void printheap(){
+    node* n = (node*) mem_heap_lo();
+    while(in_heap(n)){
+        printf("%p[%zd %c]", (void*)n, block_size(n), block_free(n) ? 'f' : 'a');
+        n = block_next(n);
+    }
+    printf("\n");
+}
+void printflist(char class){
+    node* list = get_list(class);
+    while(list){
+        printf("{%zd %c %d}",block_size(list), block_free(list)? 'f':'a', class+5);
+        if(list->next != list)
+            list = list->next;
+        else {printf("!!fail!!");break;}
+    }
+    printf("\n");
+}
+void printallflist(){
+    int i;
+    for(i=0; i<8; i++){
+        printflist(i);
+    }
 }
