@@ -78,6 +78,7 @@ static inline node** get_list_addr(char);
 static inline char get_class(size_t);
 int check_flist(node*, char, int*);
 node* split(char);
+int combine(char, node**);
 static inline void do_split(node*, const char);
 const char power = 12;
 const size_t incr = 1 << 12;
@@ -299,6 +300,7 @@ static inline void delete(node* n){
 void *malloc (size_t size) {
     node *n;
     char p;
+printf("malloc %zd\t", size);
     checkheap(1);  // Let's make sure the heap is ok!
     p = get_class(size);
     n = get_list(p);
@@ -307,18 +309,28 @@ void *malloc (size_t size) {
         //for that request
         if(n)
             return found(n, p);
-        else {
-            n = split(p+1);
+        if(combine(p-1, &n)){
             n->a = 1;
-            checkheap(1);
             return (void*) &n->prev;
         }
+        n = split(p+1);
+        n->a = 1;
+        checkheap(1);
+        return (void*) &n->prev;
     }
     else{
+printf("in the else\t");
+        n = flistn;
+        while(n){
+            if(block_size(n) >= size+8)
+                return found(n, SIZEN);
+            n = n->next;
+        }
+        printf("nothing in flistn for us\t");
         //Requested size is larger than blocks we keep on hand under
-        //normal circumstances, see about calling sbrk for a variable
+        //normal circumstances, call sbrk for a variable
         //size block, store its size in its header so that it can be
-        //placed on flistn when it is freed.
+        //placed accurately measured when it is freed.
         size_t up = (size + 0x7 ) & ~0x7; //align size to 8
         up += 8; //account for metadata
         if((up + mem_heapsize()) > LIMIT){
@@ -333,6 +345,7 @@ void *malloc (size_t size) {
         n->head = (up-8) | SIZEN; //dont acount for metadata when accounting for
         n->a = 1;                 //size of the allocation
         checkheap(1);
+        printf("returning sbrk val\t");
         return (void*) &n->prev;
     }
     return NULL; //shouldn't ever reach here
@@ -451,7 +464,7 @@ static inline void do_split(node* n, const char class){
 static inline void* found(node *n, const char class){
     //suitable block found
     flist_delete(n, get_list_addr(class));
-    n->head = class;  //TODO: test without this line, it shouldn't be necessary if lists
+    //n->head = class;  //TODO: test without this line, it shouldn't be necessary if lists
                       //are maintained appropriately
     n->a = 1;
     //TODO: see about marking next block
@@ -459,21 +472,50 @@ static inline void* found(node *n, const char class){
     return (void*) &n->prev;
 }
 
+/* Attempts to combine two blocks of size class into one block of size class+1
+ * returns 0 if the combine fails. On success, returns 1 and res points to the
+ * combined block.
+ */
+int combine(char class, node** res){
+    node *m, *n;
+    if(class > 5 || class < 0) 
+        return 0;
+    n = get_list(class);
+    while(n){
+        m = block_next(n);
+        if(in_heap(m) && block_free(m) && (block_class(m) == class)){
+            delete(m); delete(n);
+            n->head = (class+1) | (n->head & 0xfffffff8);
+            *res = n;
+            return 1;
+        }
+        n = n->next;
+    }
+    return 0;
+}
+
 /*
  * free
  */
 void free (void *ptr) {
+    char class;
     if (ptr == NULL) {
         return;
     }
+printf("free\t");
     checkheap(1);
     node *n = (node*)(((long)ptr)-8);
     //Use the header to free the block
     //and place the block in the free list
     n->a = 0;
-    //purposefully dont coalesce in this implementation to
-    //push throughput
     add(n);
+    class = block_class(n);
+    //while(class<6){
+        while(combine(class,&n)){
+            add(n);
+        }
+        class++;
+    //}
     checkheap(1);
 }
 /*
@@ -495,6 +537,7 @@ void *realloc(void *oldptr, size_t size) {
         return oldptr; 
 
     oldsize = block_size(old);
+    printf("realloc oldsz:%zd newsz:%zd\t",oldsize, size);
     newptr = malloc(size);
     //copy first oldSize bytes of oldptr to newptr
     oldsize = size < oldsize ? size : oldsize;
@@ -508,6 +551,7 @@ void *realloc(void *oldptr, size_t size) {
  * calloc - you may want to look at mm-naive.c
  */
 void *calloc (size_t nmemb, size_t size) {
+printf("calloc\t");
     void* newptr;
     checkheap(1);
     newptr = malloc(nmemb * size);
