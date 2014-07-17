@@ -2,10 +2,17 @@
  * mm.c
  * jdbrando - Jeff Brandon
  *
- * NOTE TO STUDENTS: Replace this header comment with your own header
- * comment that gives a full description of your solution.
- * Power of 2 size allocations.
- * first fit.
+ * This implementation of a dynamic memory allocator uses segregated
+ * free lists with sizes equal to exactly 2^n for n in [5,11]. Smaller sizes
+ * are allocated to a block of 32 to bytes (n=5) and larger blocks are 
+ * maintained on an 8th free list for blocks greater than size 2040.
+ * Allocations are of exactly 2^n bytes and headers are stored inside
+ * those allocations so payloads are equal to (2^n - 8) where 8 is the size
+ * of the block header for blocks of size 2^5 and 2^11. For larger blocks
+ * the size is exactly what is requested. 
+ *
+ * The free lists are not sorted, insertion is simply done at the head of the 
+ * list. 
  */
 
 #include <assert.h>
@@ -49,6 +56,15 @@
 #endif
 
 #define LIMIT (0x6400000u)
+/* this struct is used for referencing data in an organized way
+ * head represents the block header
+ * a serves as a boolean flag representing weather the block
+ * is allocated or free
+ * prev and next point to the next and previous free blocks in the
+ * appropriate list repectively
+ * prev_alloc, next_alloc, and b are unused and serve as padding
+ * to ensure correct allignment.
+ */
 struct node {
     uint32_t head;
     char prev_alloc; //in order to utilise all space use 4 unused bytes for 
@@ -83,6 +99,11 @@ static inline void do_split(node*, const char);
 const char power = 12;
 const size_t incr = 1 << 12;
 
+/* The following definitions represent size classes
+ * the number represents the n in 2^n and the value
+ * SIZEN is unique in that it is the only list with variable
+ * size blocks
+ */
 #define SIZEN 7
 #define SIZE11 6
 #define SIZE10 5
@@ -101,6 +122,11 @@ static node* flist10 = NULL;
 static node* flist11 = NULL;
 static node* flistn = NULL;
 
+/* Insert a node into a list, if the list is NULL
+ * set list to n.
+ * n - The node to insert
+ * list - the address of the list to insert into
+ */
 static inline void flist_insert(node* n, node** list){
     if(*list){
         n->next = *list;
@@ -114,6 +140,8 @@ static inline void flist_insert(node* n, node** list){
     }
 }
 
+/* Update a list
+ */
 static inline void flist_update(const node* old, node* new, node** list){
     if(new==old){
         flist_delete(new,list);
@@ -124,6 +152,17 @@ static inline void flist_update(const node* old, node* new, node** list){
     }
 }
 
+/* Delete a node from a list
+ * n - the node to delete
+ * list - the address of the list n is an element of
+ * to perform the delete update the predecessor of n to
+ * point to the successor of n as its next element and likewise 
+ * update the successor of n to point to the predecessor of n as 
+ * its previous element. 
+ * One special case is when n has no previous element, signifying
+ * n is the head of the list. If this is the case it is important to update
+ * the list to set it to the node located at n->next.   
+ */
 static inline void flist_delete(const node* n, node** list){
     if(n){
         if(n->next)
@@ -154,6 +193,9 @@ static int in_heap(const void* p) {
     return p <= mem_heap_hi() && p >= mem_heap_lo();
 }
 
+/* For classes 0-6 return the appropriate (2^n)-8
+ * for class 7 return the size portion of n->head
+ */
 static inline size_t block_size(const node* n){
     switch(block_class(n)){
     case SIZE5:
@@ -175,16 +217,20 @@ static inline size_t block_size(const node* n){
     }
 }
 
+//return least significant 3 bits that store block class information
 static inline char block_class(const node* n){
     return (char) (n->head & 0x7);
 }
 
+//Calculate next block location using size of current block
 static inline node* block_next(const node* n){
     if(block_class(n) < SIZEN)
         return (node*)((size_t)n + (1<<(block_class(n)+5)));
     return (node*)((long) n + block_size(n) + 8);
     
 }
+
+//check the allocated flag
 static inline char block_free(const node* n){
     return !(n->a);
 }
@@ -204,11 +250,17 @@ int mm_init(void) {
     size_t size = incr;
     char p = power;
     long addr = (long) mem_sbrk(size);
+    //init free lists to NULL
     flist5 = flist6 = flist7 = flist8 = flist9 = flist10 = flist11 = flistn = NULL;
     if(addr == -1){
         fprintf(stderr,"mm_init failed calling mem_sbrk\n");
         return -1;
     }
+    //Start with block of size 2^12
+    //split it and add one block to the free list
+    //then split the other and repeat until there is
+    //one block of each class in each free list
+    //except the smallest which will have 2 blocks
     while(size != 0x20){
         size >>= 1;
         n = (node*) (addr + size);
@@ -231,7 +283,8 @@ int mm_init(void) {
     return 0;
 }
 
-/* 
+/* Extract the class of the block and add to the appropriate
+ * free list based on that.
  */
 static inline void add(node* n){
     char s = block_class(n);
@@ -263,6 +316,9 @@ static inline void add(node* n){
     }
 }
 
+/* Determine class of the block and delete from appropriate 
+ * free list
+ */
 static inline void delete(node* n){
     switch(block_class(n)){
     case SIZE5:
@@ -291,9 +347,6 @@ static inline void delete(node* n){
     }
 }
 
-
-//TODO:Write Malloc free and such under new scheme
-
 /*
  * malloc
  */
@@ -306,28 +359,30 @@ void *malloc (size_t size) {
     if(p<7){
         //allocate any block on the list because it is the best size
         //for that request
-        if(n)
+        if(n) //there exists a block of the size we're looking for already
             return found(n, p);
-        if(combine(p-1, &n)){
+        if(combine(p-1, &n)){ //try and combine 2 blocks of the class below
             n->a = 1;
             return (void*) &n->prev;
         }
+        //if the above fails split a larger block
         n = split(p+1);
         n->a = 1;
         checkheap(1);
         return (void*) &n->prev;
     }
     else{
+        //search flistn for a free block that will suit our needs
         n = flistn;
         while(n){
-            if(block_size(n) >= size+8)
+            if(block_size(n) >= size+8) //found a block
                 return found(n, SIZEN);
             n = n->next;
         }
         //Requested size is larger than blocks we keep on hand under
         //normal circumstances, call sbrk for a variable
         //size block, store its size in its header so that it can be
-        //placed accurately measured when it is freed.
+        //accurately measured when it is freed.
         size_t up = (size + 0x7 ) & ~0x7; //align size to 8
         up += 8; //account for metadata
         if((up + mem_heapsize()) > LIMIT){
@@ -347,6 +402,9 @@ void *malloc (size_t size) {
     return NULL; //shouldn't ever reach here
 }
 
+/* Based on a requested size of allocation, get
+ * the class of block we will allocate for that request
+ */
 static inline char get_class(const size_t size){
     size_t s = 1<<5;
     char  p = 0;
@@ -355,6 +413,7 @@ static inline char get_class(const size_t size){
     return p;
 }
 
+//based on a class get the appropriate flist
 static inline node* get_list(const char p){
     switch(p){
     case SIZE5:
@@ -376,6 +435,7 @@ static inline node* get_list(const char p){
     }
 }
 
+//based on class get appropriate flist address
 static inline node** get_list_addr(const char p){
     switch(p){
     case SIZE5:
@@ -412,6 +472,7 @@ node* split(char class){
     }
     if(class > 6){
         //Call sbrk
+        //similar to mm_init, get block of size 2^12 and split it
         if((mem_heapsize()+incr) > LIMIT){
             fprintf(stderr, "Uh oh what do we do here?\n");
             return NULL;
@@ -421,18 +482,18 @@ node* split(char class){
             fprintf(stderr,"mem_sbrk failed!!\n");
             return NULL;
         }
-        do_split(n, 7); //I dont like using SIZEN here so I just used 7
+        do_split(n, SIZEN); 
         return n;
     }
     listptr = get_list_addr(class);
-    if((n = *listptr)){
+    if((n = *listptr)){ //list is not empty
         //we've found a block to split!
         delete(n);
         do_split(n, class);
         return n;
     }
     if(class<7){
-        n = split(class+1);
+        n = split(class+1); //call split recursively
         do_split(n, class);
         //TODO: consider coalescing here
         return n;
@@ -443,6 +504,11 @@ node* split(char class){
     }
 }
 
+/* Given a node of a class, break it into two nodes of
+ * class (class-1). Add the second node to the appropriate
+ * free list. At the end of this function n will be half the size it
+ * was previously. 
+ */
 static inline void do_split(node* n, const char class){
     node* m;
     n->head = class-1;
@@ -454,14 +520,11 @@ static inline void do_split(node* n, const char class){
 
 /* Remove the block from it's list
  * mark the header to indicate size class
- * mark next block to let it know this blocks size?
  * return a pointer to the 8 byte aligned address just beyond the nodes metadata
  */
 static inline void* found(node *n, const char class){
     //suitable block found
     flist_delete(n, get_list_addr(class));
-    //n->head = class;  //TODO: test without this line, it shouldn't be necessary if lists
-                      //are maintained appropriately
     n->a = 1;
     //TODO: see about marking next block
     checkheap(1);
@@ -471,6 +534,11 @@ static inline void* found(node *n, const char class){
 /* Attempts to combine two blocks of size class into one block of size class+1
  * returns 0 if the combine fails. On success, returns 1 and res points to the
  * combined block.
+ * under current implementation free lists are not sorted so iterate through the
+ * appropriate free list and check if the next block in the heap is both free and
+ * also the appropriate size class. If it is remove both block from the free list
+ * combine them, set res and return. If we reach the end of the list  combine 
+ * fails.
  */
 int combine(char class, node** res){
     node *m, *n;
@@ -506,15 +574,16 @@ void free (void *ptr) {
     add(n);
     class = block_class(n);
     //while(class<6){
+        //combine blocks of the returned blocks size class until we fail
         while(combine(class,&n)){
             add(n);
         }
-        class++;
+        //class++;
     //}
     checkheap(1);
 }
 /*
- * realloc - you may want to look at mm-naive.c
+ * realloc 
  */
 void *realloc(void *oldptr, size_t size) {
     void *newptr;
@@ -534,6 +603,7 @@ void *realloc(void *oldptr, size_t size) {
     oldsize = block_size(old);
     newptr = malloc(size);
     //copy first oldSize bytes of oldptr to newptr
+    //TODO: update to inplace reallocation if possible
     oldsize = size < oldsize ? size : oldsize;
     memcpy(newptr,oldptr, oldsize);
     free(oldptr);
@@ -619,6 +689,8 @@ int mm_checkheap(int verbose) {
     return 0;
 }
 
+//checks a free node list for errors / discrepancies
+// returns 0 if everything is okay 
 int check_flist(node* flist, char class, int* countptr){
     node* n = flist;
     class = class;
@@ -663,6 +735,7 @@ int check_flist(node* flist, char class, int* countptr){
     return 0;
 }
 
+//Used in debugging to print the heap
 void printheap(){
     node* n = (node*) mem_heap_lo();
     while(in_heap(n)){
@@ -671,6 +744,8 @@ void printheap(){
     }
     printf("\n");
 }
+
+//Used in debugging to print a freelist
 void printflist(char class){
     node* list = get_list(class);
     while(list){
@@ -681,6 +756,8 @@ void printflist(char class){
     }
     printf("\n");
 }
+
+//used in debugging to print all free lists
 void printallflist(){
     int i;
     for(i=0; i<8; i++){
