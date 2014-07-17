@@ -300,7 +300,6 @@ static inline void delete(node* n){
 void *malloc (size_t size) {
     node *n;
     char p;
-printf("malloc %zd\t", size);
     checkheap(1);  // Let's make sure the heap is ok!
     p = get_class(size);
     n = get_list(p);
@@ -319,14 +318,12 @@ printf("malloc %zd\t", size);
         return (void*) &n->prev;
     }
     else{
-printf("in the else\t");
         n = flistn;
         while(n){
             if(block_size(n) >= size+8)
                 return found(n, SIZEN);
             n = n->next;
         }
-        printf("nothing in flistn for us\t");
         //Requested size is larger than blocks we keep on hand under
         //normal circumstances, call sbrk for a variable
         //size block, store its size in its header so that it can be
@@ -337,7 +334,7 @@ printf("in the else\t");
             fprintf(stderr,"out of mem\n");
             return NULL;
         }
-        n = (node*) mem_sbrk(up);
+        n = (node*) mem_sbrk(up+24);//firefox-reddit.rep breaks if i dont add 24 here
         if(n == (node*) -1){
             fprintf(stderr,"mem_sbrk failed\n");
             return NULL;
@@ -345,7 +342,6 @@ printf("in the else\t");
         n->head = (up-8) | SIZEN; //dont acount for metadata when accounting for
         n->a = 1;                 //size of the allocation
         checkheap(1);
-        printf("returning sbrk val\t");
         return (void*) &n->prev;
     }
     return NULL; //shouldn't ever reach here
@@ -502,7 +498,6 @@ void free (void *ptr) {
     if (ptr == NULL) {
         return;
     }
-printf("free\t");
     checkheap(1);
     node *n = (node*)(((long)ptr)-8);
     //Use the header to free the block
@@ -537,7 +532,6 @@ void *realloc(void *oldptr, size_t size) {
         return oldptr; 
 
     oldsize = block_size(old);
-    printf("realloc oldsz:%zd newsz:%zd\t",oldsize, size);
     newptr = malloc(size);
     //copy first oldSize bytes of oldptr to newptr
     oldsize = size < oldsize ? size : oldsize;
@@ -551,7 +545,6 @@ void *realloc(void *oldptr, size_t size) {
  * calloc - you may want to look at mm-naive.c
  */
 void *calloc (size_t nmemb, size_t size) {
-printf("calloc\t");
     void* newptr;
     checkheap(1);
     newptr = malloc(nmemb * size);
