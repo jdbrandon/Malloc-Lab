@@ -51,12 +51,10 @@
 #define LIMIT (0x6400000u)
 struct node {
     uint32_t head;
-    char prev_alloc; //in order to utilise all space use 4 unused bytes for 
-    char next_alloc; //additonal metadata. Not sure exactly what that is yet
-    char a;          //Right now I'm thinking data on adjacent blocks in the heap
-    char b;          //Bitmaps may be useful also
-    struct node *prev;
-    struct node *next;
+    uint32_t prev;
+    uint32_t prev2;
+    uint32_t next;
+    uint32_t next2;
 };
 typedef struct node node;
 
@@ -80,6 +78,10 @@ int check_flist(node*, char, int*);
 node* split(char);
 int combine(char, node**);
 static inline void do_split(node*, const char);
+static inline node* n(const node*);
+static inline void sn(node*, node*);
+static inline node* p(const node*);
+static inline void sp(node*, node*);
 const char power = 12;
 const size_t incr = 1 << 12;
 
@@ -103,13 +105,13 @@ static node* flistn = NULL;
 
 static inline void flist_insert(node* n, node** list){
     if(*list){
-        n->next = *list;
-        n->prev = NULL;
-        (*list)->prev = n;
+        sn(n, *list);
+        sp(n, NULL);
+        sp(*list, n);
         *list = n;
     } else {
-        n->next = NULL;
-        n->prev = NULL;
+        sn(n, NULL);
+        sp(n, NULL);
         *list = n;
     }
 }
@@ -126,11 +128,11 @@ static inline void flist_update(const node* old, node* new, node** list){
 
 static inline void flist_delete(const node* n, node** list){
     if(n){
-        if(n->next)
-            n->next->prev = n->prev;
-        if(n->prev)
-            n->prev->next = n->next;
-        else *list = n->next; //n equals list head, so update list
+        if(n(n))
+            sp(n(n), p(n));
+        if(p(n))
+            sp(p(n),n(n));
+        else *list = n(n); //n equals list head, so update list
     }
 }
 
@@ -152,6 +154,22 @@ static inline int aligned(const void const* p) {
 // Return whether the pointer is in the heap.
 static int in_heap(const void* p) {
     return p <= mem_heap_hi() && p >= mem_heap_lo();
+}
+
+static inline node* n(const node* n){
+   return (node*) &n->next;
+}
+
+static inline void sn(node* n, node* val){
+    *((node*)&n->next) = val;
+}
+
+static inline node* p(const node* n){
+   return (node*) &n->prev;
+}
+
+static inline void sp(node* n, node* val){
+    *((node*)&n->prev) = val;
 }
 
 static inline size_t block_size(const node* n){
@@ -209,23 +227,10 @@ int mm_init(void) {
         fprintf(stderr,"mm_init failed calling mem_sbrk\n");
         return -1;
     }
-    while(size != 0x20){
-        size >>= 1;
-        n = (node*) (addr + size);
-        n->head =(--p)-5; //(--p)-5 calculates size class 
-        n->prev_alloc = 0;
-        n->next_alloc = 0;
-        n->a = 0;
-        n->b = 0;
-        add(n);
-    }
-    n = (node*) addr;
-    n->head = 0;
-    n->prev_alloc = 0;
-    n->next_alloc = 0;
-    n->a = 0;
-    n->b = 0;
-    flist_insert(n, &flist5);
+    uint32_t* p = (uint32_t*) addr;
+    p[0] = 0;
+    n = (node*) &p[1];
+    /// REVAMPING HERE
     
     checkheap(1);
     return 0;
@@ -322,7 +327,7 @@ void *malloc (size_t size) {
         while(n){
             if(block_size(n) >= size+8)
                 return found(n, SIZEN);
-            n = n->next;
+            n = n(n);
         }
         //Requested size is larger than blocks we keep on hand under
         //normal circumstances, call sbrk for a variable
@@ -485,7 +490,7 @@ int combine(char class, node** res){
             *res = n;
             return 1;
         }
-        n = n->next;
+        n = n(n);
     }
     return 0;
 }
@@ -624,20 +629,20 @@ int check_flist(node* flist, char class, int* countptr){
     class = class;
     int count = *countptr;
     while(n){
-        if(n->next){
-            if(n->next->prev != n){
+        if(n(n)){
+            if(p(n(n)) != n){
                 fprintf(stderr,"next elements previous element isn't this element\n");
                 printheap();
                 printflist(class);
                 return 1;
             }
-            if(n->next == n){
+            if(n(n) == n){
                 fprintf(stderr,"blocks next element is its self\n");
                 return 1;
             }
         }
-        if(n->prev){
-            if(n->prev->next != n){
+        if(p(n)){
+            if(n(p(n)) != n){
                 fprintf(stderr,"previous elements next element isn't this element\n");
                 printheap();
                 printflist(class);
@@ -656,7 +661,7 @@ int check_flist(node* flist, char class, int* countptr){
             printflist(class);
             return 1;
         }
-        n = n->next;
+        n = n(n);
         count--;
     }
     *countptr = count;
@@ -675,8 +680,8 @@ void printflist(char class){
     node* list = get_list(class);
     while(list){
         printf("{%zd %c %d}",block_size(list), block_free(list)? 'f':'a', class+5);
-        if(list->next != list)
-            list = list->next;
+        if(n(list) != list)
+            list = n(list);
         else {printf("!!fail!!");break;}
     }
     printf("\n");
