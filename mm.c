@@ -68,7 +68,7 @@ static inline char block_free(const node*);
 static inline node* block_next(const node*);
 static inline void add(node*);
 static inline void delete(node*);
-static inline void* found(node*, const char);
+static inline void* found(node*);
 static inline node* get_list(int);
 static inline node** get_list_addr(int);
 static inline char get_class(size_t);
@@ -79,6 +79,7 @@ static inline node* prev(const node*);
 static inline void setprev(node*, node*);
 void *carve(node*, size_t, size_t);
 void *relocate(void*, size_t, size_t);
+void *searchlist(node**, size_t);
 
 #define WSIZE 4
 #define DSIZE 8
@@ -99,16 +100,16 @@ void *relocate(void*, size_t, size_t);
 #define SIZE5 1
 #define SIZE4 0
 
-static node* flistn = NULL;
-static node* flist12 = NULL;
-static node* flist11 = NULL;
-static node* flist10 = NULL;
-static node* flist9 = NULL;
-static node* flist8 = NULL;
-static node* flist7 = NULL;
-static node* flist6 = NULL;
-static node* flist5 = NULL;
 static node* flist4 = NULL;
+static node* flist5 = NULL;
+static node* flist6 = NULL;
+static node* flist7 = NULL;
+static node* flist8 = NULL;
+static node* flist9 = NULL;
+static node* flist10 = NULL;
+static node* flist11 = NULL;
+static node* flist12 = NULL;
+static node* flistn = NULL;
 
 static node** lists = &flist4;
 static node* prolog;
@@ -118,34 +119,28 @@ static void* lbound;
 static inline void flist_insert(node* n, node** list){
     if(*list){
         setnext(n, *list);
-        setprev(n, NULL);
+        setprev(n, prev(*list));
         setprev(*list, n);
+        setnext(prev(n), n);
         *list = n;
     } else {
-        setnext(n, NULL);
-        setprev(n, NULL);
+        setnext(n, n);
+        setprev(n, n);
         *list = n;
     }
 }
 
 static inline void flist_update(const node* old, node* new, node** list){
-    if(new==old){
-        flist_delete(new,list);
-        flist_insert(new,list);
-    } else {
-        flist_insert(new,list);
-        flist_delete(old,list);
-    }
+    flist_delete(old,list);
+    flist_insert(new,list);
 }
 
 static inline void flist_delete(const node* n, node** list){
     if(n){
-        if(next(n) != lbound)
-            setprev(next(n), prev(n));
-        if(prev(n) != lbound)
-            setnext(prev(n), next(n));
-        else *list = next(n); //n equals list head, so update list
-        *list = (*list == lbound) ? NULL : *list;
+        if(next(n) == n) {*list = NULL; return;}
+        setprev(next(n), prev(n));
+        setnext(prev(n), next(n));
+        if(n == *list) *list = next(n); //n equals list head, so update list
     }
 }
 
@@ -170,7 +165,7 @@ static int in_heap(const void* p) {
 }
 
 static inline node* next(const node* n){
-    return (node*)((long)lbound + n->next);
+    return n->next ? (node*)((long)lbound + n->next) : NULL;
 }
 
 static inline void setnext(node* n, node* val){
@@ -178,7 +173,7 @@ static inline void setnext(node* n, node* val){
 }
 
 static inline node* prev(const node* n){
-    return (node*)((long)lbound + n->prev);
+    return n->prev ? (node*)((long)lbound + n->prev) : NULL;
 }
 
 static inline void setprev(node* n, node* val){
@@ -196,9 +191,11 @@ static inline char block_class(const node* n){
 static inline node* block_next(const node* n){
     return (n == epilog)? NULL : (node*)((long) n + block_size(n) + DSIZE);
 }
+
 static inline node* block_prev(const node* n){
-    return (n==prolog) ? NULL : (node*)((long)n - (block_size((node*)(((uint32_t*)n)-1))+8));
+    return (n  == prolog) ? NULL : (node*)((long)n - (block_size((node*)(((uint32_t*)n)-1))+8));
 }
+
 static inline void block_mark(node* n){
     char free = block_free(n);
     node* m;
@@ -267,47 +264,19 @@ static inline void delete(node* n){
  * malloc
  */
 void *malloc (size_t size) {
-    node *n, *m;
-    char p, count;
-    size_t best, tmp;
+    node *n;
+    char p;
     checkheap(1);  // Let's make sure the heap is ok!
     size = (size + 7) & ~7; //align size
+    if(size<8)return NULL;
     p = get_class(size);
-    n = get_list(p);
-    while(n && (n != lbound)){
-        if((best = block_size(n)) >= size+DSIZE){
-            count = 0;
-            m = next(n);
-            while((count++ < LOOKAHEAD) && m && (m!=lbound)){
-                if(((tmp = block_size(m)) < best) && (tmp >= size+DSIZE) ){
-                    best = tmp;
-                    n = m;
-                }
-                m = next(m);
-            }
-            if((best - size) >= 16)
-                return carve(n, size, best - size - 8);
-            return found(n, p);
-        }
-        n = next(n);
-    }
+    n = searchlist(get_list_addr(p), size);
+    if(n!=NULL) 
+        return n;
     //carve out a chunk of a large block and allocate it if possible
     if(p != SIZEN){
-        count = 0;
-        n = get_list(SIZEN);
-        if(n && (n != lbound)){
-            m = next(n);
-            best = block_size(n);
-            while(m && (m != lbound) && (count++ < LOOKAHEAD)){
-                tmp = block_size(m);
-                if(best < tmp){
-                    best = tmp;
-                    n = m;
-                }
-                m = next(m);
-            }
-            return carve(n, size, best - size - 8);
-        }
+        n = searchlist(get_list_addr(SIZEN), size);
+        if(n != NULL) return n;
     }
     //Requested size is not found on a free list call sbrk for a variable
     //size block, store its size in its header so that it can be
@@ -334,6 +303,35 @@ printheap();
     return (void*) &n->prev;
 }
 
+void* searchlist(node** list, size_t size){
+    node* n, *m, *start;
+    size_t best, tmp;
+    char count;
+    start = n = *list;
+    if(n && (block_class(n) < SIZE8)) return found(n);
+    while(n){
+        if((best = block_size(n)) >= size+DSIZE){
+            count = 0;
+            m = next(n);
+            while((count++ < LOOKAHEAD) && m && (m != start)){
+                if(((tmp = block_size(m)) < best) && (tmp >= size+DSIZE) ){
+                    best = tmp;
+                    n = m;
+                }
+                m = next(m);
+            }
+//            *list = next(n);
+            if((best - size) >= 16)
+                return carve(n, size, best - size - 8);
+            return found(n);
+        }
+        n = next(n);
+        if(n == start)
+            break;
+    }
+    return NULL;
+}
+
 void* carve(node* n, size_t s0, size_t s1){
      node* m;
      char nextAlloc;
@@ -349,23 +347,23 @@ void* carve(node* n, size_t s0, size_t s1){
 }
 
 static inline char get_class(const size_t size){
-    if(size <= (0x10 - 8))
+    if(size == 8)
         return SIZE4;
-    else if(size <= (0x20 - 8))
+    else if(size == 16)
         return SIZE5;
-    else if(size <= (0x40 - 8))
+    else if(size == 24)
         return SIZE6;
-    else if(size <= (0x80 - 8))
+    else if(size == 32)
         return SIZE7;
-    else if(size <= (0x100 - 8))
+    else if(size <= 64)
         return SIZE8;
-    else if(size <= (0x200 - 8))
+    else if(size <= 128)
         return SIZE9;
-    else if(size <= (0x400 - 8))
+    else if(size <= 256)
         return SIZE10;
-    else if(size <= (0x800 - 8))
+    else if(size <= 500)
         return SIZE11;
-    else if(size <= (0x1000 - 8))
+    else if(size <= 1000)
         return SIZE12;
     else return SIZEN;
 }
@@ -383,9 +381,9 @@ static inline node** get_list_addr(const int p){
  * mark next block to let it know this blocks size?
  * return a pointer to the 8 byte aligned address just beyond the nodes metadata
  */
-static inline void* found(node *n, const char class){
+static inline void* found(node *n){
     //suitable block found
-    flist_delete(n, get_list_addr(class));
+    delete(n);
     n->head |= ALLOC;
     block_mark(n);
     //TODO: see about marking next block
@@ -571,7 +569,8 @@ int mm_checkheap(int verbose) {
         p = block_next(p);
         offset++;
     }
-    for(class = 0, listptr = lists; class < LISTBOUND; listptr++,class++){
+    for(class = 0; class < LISTBOUND; class++){
+        listptr = get_list_addr(class);
         r = check_flist(*listptr, class, &count);
         if(r){
             fprintf(stderr,"flist%d failed\n",class+4);
@@ -587,24 +586,17 @@ int mm_checkheap(int verbose) {
 }
 
 int check_flist(node* flist, char class, int* countptr){
-    node* n = flist;
+    node* n, *start;
+    n = start  = flist;
     int count = *countptr;
-    while(n && (n != lbound)){
-        if(next(n) != lbound){
-            if(prev(next(n)) != n){
-                fprintf(stderr,"next elements previous element isn't this element\n");
-                return 1;
-            }
-            if(next(n) == n){
-                fprintf(stderr,"blocks next element is its self\n");
-                return 1;
-            }
+    while(n){
+        if(prev(next(n)) != n){
+            fprintf(stderr,"next elements previous element isn't this element\n");
+            return 1;
         }
-        if(prev(n) != lbound){
-            if(next(prev(n)) != n){
-                fprintf(stderr,"previous elements next element isn't this element\n");
-                return 1;
-            }
+        if(next(prev(n)) != n){
+            fprintf(stderr,"previous elements next element isn't this element\n");
+            return 1;
         }
         if(!block_free(n)){
             fprintf(stderr,"allocated block on the free list\n");
@@ -617,6 +609,8 @@ int check_flist(node* flist, char class, int* countptr){
         }
         n = next(n);
         count--;
+        if(n == start)
+            break;
     }
     *countptr = count;
     return 0;
@@ -631,12 +625,13 @@ void printheap(){
     printf("\n");
 }
 void printflist(char class){
-    node* list = get_list(class);
-    while(list && (list != lbound)){
+    node* start, *list = get_list(class);
+    start = list;
+    while(list){
         printf("%p{%zd %c %d}",(void*)list,block_size(list), block_free(list)? 'f':'a', class+4);
-        if(next(list) != list)
-            list = next(list);
-        else {printf("!!fail!!");break;}
+        list = next(list);
+        if(list == start)
+            break;
     }
     printf("\n");
 }
