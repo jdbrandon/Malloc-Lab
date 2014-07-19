@@ -1,6 +1,6 @@
 MAKEFLAGS = -j4
 CC = gcc
-CFLAGS = -Wall -Wextra -Werror -pedantic -g -DDRIVER -std=gnu99
+CFLAGS = -Wall -Wextra -Werror -pedantic -g -DDRIVER -std=gnu99 -pg
 FAST = -DNDEBUG -O2
 
 OBJS = mdriver.o mm.o memlib.o fsecs.o fcyc.o clock.o ftimer.o
