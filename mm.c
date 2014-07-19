@@ -89,7 +89,10 @@ void *searchlist(node**, size_t);
 #define LISTBOUND 10
 #define LOOKAHEAD 5
 
-#define SIZEN 9
+#define SIZEN 12
+#define SIZE15 11
+#define SIZE14 10 
+#define SIZE13 9
 #define SIZE12 8
 #define SIZE11 7
 #define SIZE10 6
@@ -109,6 +112,9 @@ static node* flist9 = NULL;
 static node* flist10 = NULL;
 static node* flist11 = NULL;
 static node* flist12 = NULL;
+static node* flist13 = NULL;
+static node* flist14 = NULL;
+static node* flist15 = NULL;
 static node* flistn = NULL;
 
 static node** lists = &flist4;
@@ -229,8 +235,8 @@ static inline char block_free(const node* n){
 int mm_init(void) {
     //alocate some blocks so they are ready for the first malloc
     long addr = (long) mem_sbrk(4*WSIZE);
-    flist4 = flist5 = flist6 = flist7 = flist8 = flist9 = \
-        flist10 = flist11 = flist12 = flistn = NULL;
+    flist4 = flist5 = flist6 = flist7 = flist8 = flist9 = flist10 = flist11 = \
+        flist12 = flist13 = flist14 = flist15 = flistn = NULL;
     if(addr == -1){
         fprintf(stderr,"mm_init failed calling mem_sbrk\n");
         return -1;
@@ -355,16 +361,22 @@ static inline char get_class(const size_t size){
         return SIZE6;
     else if(size == 32)
         return SIZE7;
-    else if(size <= 64)
+    else if(size <= 56)
         return SIZE8;
-    else if(size <= 128)
+    else if(size <= 80)
         return SIZE9;
-    else if(size <= 256)
+    else if(size <= 104)
         return SIZE10;
-    else if(size <= 500)
+    else if(size <= 300)
         return SIZE11;
-    else if(size <= 1000)
+    else if(size <= 500)
         return SIZE12;
+    else if(size <= 700)
+        return SIZE13;
+    else if(size <= 900)
+        return SIZE14;
+    else if(size <= 1100)
+        return SIZE15;
     else return SIZEN;
 }
 
