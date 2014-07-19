@@ -86,6 +86,7 @@ void *relocate(void*, size_t, size_t);
 #define NALLOC 2
 #define PALLOC 4
 #define LISTBOUND 10
+#define LOOKAHEAD 5
 
 #define SIZEN 9
 #define SIZE12 8
@@ -112,6 +113,7 @@ static node* flist4 = NULL;
 static node** lists = &flist4;
 static node* prolog;
 static node* epilog;
+static void* lbound;
 
 static inline void flist_insert(node* n, node** list){
     if(*list){
@@ -138,12 +140,12 @@ static inline void flist_update(const node* old, node* new, node** list){
 
 static inline void flist_delete(const node* n, node** list){
     if(n){
-        if(next(n) != mem_heap_lo())
+        if(next(n) != lbound)
             setprev(next(n), prev(n));
-        if(prev(n) != mem_heap_lo())
+        if(prev(n) != lbound)
             setnext(prev(n), next(n));
         else *list = next(n); //n equals list head, so update list
-        *list = (*list == mem_heap_lo()) ? NULL : *list;
+        *list = (*list == lbound) ? NULL : *list;
     }
 }
 
@@ -164,11 +166,11 @@ static inline int aligned(const void const* p) {
 
 // Return whether the pointer is in the heap.
 static int in_heap(const void* p) {
-    return p <= mem_heap_hi() && p >= mem_heap_lo();
+    return p <= mem_heap_hi() && p >= lbound;
 }
 
 static inline node* next(const node* n){
-    return (node*)((long)mem_heap_lo() + n->next);
+    return (node*)((long)lbound + n->next);
 }
 
 static inline void setnext(node* n, node* val){
@@ -176,7 +178,7 @@ static inline void setnext(node* n, node* val){
 }
 
 static inline node* prev(const node* n){
-    return (node*)((long)mem_heap_lo() + n->prev);
+    return (node*)((long)lbound + n->prev);
 }
 
 static inline void setprev(node* n, node* val){
@@ -245,6 +247,7 @@ int mm_init(void) {
     
     prolog = (node*) &p[1];
     epilog = (node*) &p[3];
+    lbound = mem_heap_lo();
     checkheap(1);
     return 0;
 }
@@ -271,11 +274,11 @@ void *malloc (size_t size) {
     size = (size + 7) & ~7; //align size
     p = get_class(size);
     n = get_list(p);
-    while(n && (n != mem_heap_lo())){
+    while(n && (n != lbound)){
         if((best = block_size(n)) >= size+DSIZE){
             count = 0;
             m = next(n);
-            while((count++ < 15) && m && (m!=mem_heap_lo())){
+            while((count++ < LOOKAHEAD) && m && (m!=lbound)){
                 if(((tmp = block_size(m)) < best) && (tmp >= size+DSIZE) ){
                     best = tmp;
                     n = m;
@@ -292,10 +295,10 @@ void *malloc (size_t size) {
     if(p != SIZEN){
         count = 0;
         n = get_list(SIZEN);
-        if(n && (n != mem_heap_lo())){
+        if(n && (n != lbound)){
             m = next(n);
             best = block_size(n);
-            while(m && (m != mem_heap_lo()) && (count++ < 10)){
+            while(m && (m != lbound) && (count++ < LOOKAHEAD)){
                 tmp = block_size(m);
                 if(best < tmp){
                     best = tmp;
@@ -586,8 +589,8 @@ int mm_checkheap(int verbose) {
 int check_flist(node* flist, char class, int* countptr){
     node* n = flist;
     int count = *countptr;
-    while(n && (n != mem_heap_lo())){
-        if(next(n) != mem_heap_lo()){
+    while(n && (n != lbound)){
+        if(next(n) != lbound){
             if(prev(next(n)) != n){
                 fprintf(stderr,"next elements previous element isn't this element\n");
                 return 1;
@@ -597,7 +600,7 @@ int check_flist(node* flist, char class, int* countptr){
                 return 1;
             }
         }
-        if(prev(n) != mem_heap_lo()){
+        if(prev(n) != lbound){
             if(next(prev(n)) != n){
                 fprintf(stderr,"previous elements next element isn't this element\n");
                 return 1;
@@ -629,7 +632,7 @@ void printheap(){
 }
 void printflist(char class){
     node* list = get_list(class);
-    while(list && (list != mem_heap_lo())){
+    while(list && (list != lbound)){
         printf("%p{%zd %c %d}",(void*)list,block_size(list), block_free(list)? 'f':'a', class+4);
         if(next(list) != list)
             list = next(list);
