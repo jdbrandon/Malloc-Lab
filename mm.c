@@ -48,7 +48,18 @@
 #define checkheap(...)
 #endif
 
-#define LIMIT (0x6400000u)
+#define LIMIT (0x6400000)
+/* Struct declaration used for manipulating block headers
+ * in an organised way. Head refers to the 4 header bytes
+ * that precede all blocks in the heap. Prev and next are
+ * pointers used by free blocks to show the next or previous
+ * block on the free list. The address of prev is also 
+ * the address returned by malloc. 
+ * Note in a 64 bit system pointers are 8 bytes normally
+ * but the heap is constrained to 2^32 bytes so by combining
+ * these 4 byte pointers with an offset we can save on some
+ * overhead and reduce our minimum allocation size.
+ */
 struct node {
     uint32_t head;
     uint32_t prev;
@@ -60,7 +71,6 @@ void printheap(void);
 void printflist(char);
 void printallflist(void);
 static inline void flist_insert(node*, node**);
-static inline void flist_update(const node*, node*, node**);
 static inline void flist_delete(const node*, node**);
 static inline size_t block_size(const node*);
 static inline char block_class(const node*);
@@ -91,7 +101,7 @@ static inline size_t get_combined_size2(const node*, const node*);
 #define SZCLASS 4
 #define METAMASK 7
 #define LISTBOUND 13
-#define LOOKAHEAD 5
+#define LOOKAHEAD 10
 
 #define SIZEN 12
 #define SIZE15 11
@@ -120,12 +130,32 @@ static node* flist13 = NULL;
 static node* flist14 = NULL;
 static node* flist15 = NULL;
 static node* flistn = NULL;
-
+/* used to access free lists as if they were an array by taking advantage
+ * of the lists being adjacent in the data segment. The order of the flists
+ * can be shifted around by the compiler but as long as the lists are retrieved
+ * the same way throughout the entire program it makes no difference.
+ */
 static node** lists = &flist4;
 static node* prolog;
 static node* epilog;
+/* To store the lower bound of the heap. Also serves as offset for 4 byte
+ * pointers
+ */
 static void* lbound;
 
+/* Free list manipulateion
+ *
+ * The following methods are used to maintain the free lists.
+ * The free lists are implemented in a circular fashion so the 
+ * lists should end where they begin.
+ */
+
+/* Given a block represented by a node, insert it into
+ * the freeist pointed do by list. List may be null, if that is the case
+ * make the list non null by seting it to n. This list implementation is
+ * circular. The nexr and prev pointers should always point to a valid
+ * element even if that element is its self.
+ */
 static inline void flist_insert(node* n, node** list){
     if(*list){
         setnext(n, *list);
@@ -140,18 +170,55 @@ static inline void flist_insert(node* n, node** list){
     }
 }
 
-static inline void flist_update(const node* old, node* new, node** list){
-    flist_delete(old,list);
-    flist_insert(new,list);
+/* Removes a block from a freelist specified by list. 
+ * Base case to handle is when the list is 1 element long.
+ * The condition to check for this is if the next element is the same element.
+ * If this is the case, set list to NULL and return.
+ * Otherwise remove the node by getting the next element on the free list and setting
+ * its previous element to the nodes previous element. Likewise, get the previous node
+ * and set its next element to the nodes next value. 
+ * One other case to consider is when the node being deleted is the head of the list.
+ * If this is the case simply set the list to the next value of the node. 
+ */
+static inline void flist_delete(const node* n, node** list){
+    if(next(n) == n) {
+        *list = NULL;
+        return;
+    }
+    setprev(next(n), prev(n));
+    setnext(prev(n), next(n));
+    if(n == *list) *list = next(n); //n equals list head, so update list
 }
 
-static inline void flist_delete(const node* n, node** list){
-    if(n){
-        if(next(n) == n) {*list = NULL; return;}
-        setprev(next(n), prev(n));
-        setnext(prev(n), next(n));
-        if(n == *list) *list = next(n); //n equals list head, so update list
-    }
+/* Inserts a block into the appropriate free list.
+ * Free list is computed using the blocks size class as an
+ * index into lists.
+ */
+static inline void add(node* n){
+    flist_insert(n, lists + block_class(n));
+}
+
+/* Deletes a block from the appropriate free list
+ * Free list is computed using the blocks size class as an
+ * index into lists.
+ */
+static inline void delete(node* n){
+    flist_delete(n, lists + block_class(n));
+}
+
+/* Uses size class as an index into lists
+ * to retrieve the appropriate free list
+ */
+static inline node* get_list(const int p){
+    return lists[p];
+}
+
+/* Uses size class as an ndex into lists
+ * to retrieve the appropriate pointer to a
+ * free list.
+ */
+static inline node** get_list_addr(const int p){
+    return &lists[p];
 }
 
 /*
@@ -174,34 +241,53 @@ static int in_heap(const void* p) {
     return p <= mem_heap_hi() && p >= lbound;
 }
 
+//gets the next node on the free list after n
 static inline node* next(const node* n){
     return n->next ? (node*)((long)lbound + n->next) : NULL;
 }
 
+//sets the node that comes after n on the free to val
 static inline void setnext(node* n, node* val){
     n->next = (uint32_t)(long)val;
 }
 
+//gets the node that comes before n on the free list
 static inline node* prev(const node* n){
     return n->prev ? (node*)((long)lbound + n->prev) : NULL;
 }
 
+//sets the node that comes before n on the free list
 static inline void setprev(node* n, node* val){
     n->prev = (uint32_t)(long)val;
 }
 
+//gets the size field of a blocks header
 static inline size_t block_size(const node* n){
     return n->head & 0xfffffff8; 
 }
 
+//gets the size class of a block (used in determining which free list the block belongs on)
 static inline char block_class(const node* n){
     return get_class(block_size(n));
 }
 
+//gets the next adjacent block in the heap
 static inline node* block_next(const node* n){
     return (n == epilog)? NULL : (node*)((long) n + block_size(n) + DSIZE);
 }
 
+/* gets the previous adjacent block in the heap
+ * NOTE: there are two block classes that do not use a footer
+ * to determine where the previous block begins. When one of these
+ * blocks is set up in the heap it sets 2 bits in the header of the
+ * next block PFIXED and SZCLASS. 
+ *   PFIXED specifies that the previous block belongs to a fixed size
+ *       class that has no footer.
+ *   SZCLASS specifies one of 2 size classes the previous block belongs to
+ *
+ * Using these flags the previous blocks header address is computed.
+ * Otherwise, the previous block is located using a footer.
+ */
 static inline node* block_prev(const node* n){
     if(n!=prolog){
         if(n->head & PFIXED) 
@@ -211,6 +297,8 @@ static inline node* block_prev(const node* n){
     return NULL;
 }
 
+/* Gets the offset of a fixed size allocation class
+ */
 static inline char get_fixed_bucket_offset(const char class){
     switch(class >> 2){
     case SIZE4:
@@ -222,6 +310,12 @@ static inline char get_fixed_bucket_offset(const char class){
     }
 }
 
+/* In the general case this function marks the footer of a block to make it
+ * identical to the block header.
+ * However if the block belongs to a special fixed size class it doesn't mark
+ * a footer and instead sets PFIXED and SZCLASS appropriately in the header of
+ * the next block.
+ */
 static inline void block_mark(node* n){
     char class = block_class(n);
     node* m;
@@ -242,8 +336,41 @@ static inline void block_mark(node* n){
         }
     }
 }
+
+//returns 1 if n is a free block
 static inline char block_free(const node* n){
     return !(n->head & ALLOC);
+}
+
+/* Determines a size class for an allocation based
+ * on a size.
+ */
+static inline char get_class(const size_t size){
+    if(size == 8)
+        return SIZE4;
+    else if(size == 16)
+        return SIZE5;
+    else if(size == 24)
+        return SIZE6;
+    else if(size <= 36)
+        return SIZE7;
+    else if(size <= 40)
+        return SIZE8;
+    else if(size <= 48)
+        return SIZE9;
+    else if(size <= 56)
+        return SIZE10;
+    else if(size <= 72)
+        return SIZE11;
+    else if(size <= 104)
+        return SIZE12;
+    else if(size <= 304)
+        return SIZE13;
+    else if(size <= 504)
+        return SIZE14;
+    else if(size <= 1000)
+        return SIZE15;
+    else return SIZEN;
 }
 
 /*
@@ -278,22 +405,11 @@ int mm_init(void) {
     return 0;
 }
 
-/* 
- */
-static inline void add(node* n){
-    flist_insert(n, lists + block_class(n));
-}
-
-static inline void delete(node* n){
-    flist_delete(n, lists + block_class(n));
-}
-
-
 /*
  * malloc
  */
 void *malloc (size_t size) {
-//printf("malloc %zd", size);
+//printf("malloc %zd\t", size);
     node *n;
     long res;
     char p;
@@ -328,9 +444,7 @@ void *malloc (size_t size) {
         return NULL;
     }
     n = (node*) (res-WSIZE);
-    char meta = epilog->head & METAMASK;
-    n->head = size; 
-    n->head |= meta;
+    n->head = size | (epilog->head & METAMASK); 
     epilog = (node*)((long)mem_heap_hi()-3);
     epilog->head = ALLOC;
     block_mark(n);
@@ -339,6 +453,8 @@ void *malloc (size_t size) {
     return (void*) &n->prev;
 }
 
+/* Search a free list for a node that can accomodate an allocation of size size.
+ */
 void* searchlist(node** list, size_t size){
     node* n, *m, *start;
     size_t best, tmp;
@@ -367,6 +483,11 @@ void* searchlist(node** list, size_t size){
     return NULL;
 }
 
+/* Divide n into two nodes. The first with a payload size specified by
+ * s0, the second with a paylod of s1 bytes. Returns a pointer to the first
+ * node in order for it to be allocated and then adds the second node to
+ * the appropriate free list.
+ */
 void* carve(node* n, size_t s0, size_t s1){
      node* m;
      delete(n);
@@ -379,42 +500,6 @@ void* carve(node* n, size_t s0, size_t s1){
 //printf(" (c) %p\t", (void*) &n->prev);
      checkheap(1);
      return &n->prev;
-}
-
-static inline char get_class(const size_t size){
-    if(size == 8)
-        return SIZE4;
-    else if(size == 16)
-        return SIZE5;
-    else if(size == 24)
-        return SIZE6;
-    else if(size <= 36)
-        return SIZE7;
-    else if(size <= 40)
-        return SIZE8;
-    else if(size <= 48)
-        return SIZE9;
-    else if(size <= 56)
-        return SIZE10;
-    else if(size <= 72)
-        return SIZE11;
-    else if(size <= 104)
-        return SIZE12;
-    else if(size <= 304)
-        return SIZE13;
-    else if(size <= 504)
-        return SIZE14;
-    else if(size <= 1000)
-        return SIZE15;
-    else return SIZEN;
-}
-
-static inline node* get_list(const int p){
-    return lists[p];
-}
-
-static inline node** get_list_addr(const int p){
-    return &lists[p];
 }
 
 /* Remove the block from it's list
@@ -482,6 +567,8 @@ void free (void *ptr) {
     checkheap(1);
 }
 
+/* Given 3 nodes returns the payload size of a block resulting from coalsceing
+ */
 static inline size_t get_combined_size3(const node* n, const node* m, const node* w){
     size_t size;
     size = block_size(n); 
@@ -491,6 +578,8 @@ static inline size_t get_combined_size3(const node* n, const node* m, const node
     return size;
 }
 
+/* Given 2 nodes return the payload size of a block resulting from cealscing.
+ */
 static inline size_t get_combined_size2(const node* n, const node* m){
     size_t size;
     size = block_size(n); 
@@ -500,7 +589,7 @@ static inline size_t get_combined_size2(const node* n, const node* m){
 }
 
 /*
- * realloc - you may want to look at mm-naive.c
+ * realloc
  */
 void *realloc(void *oldptr, size_t size) {
 //printf("realloc %p %zd\t", oldptr, size);
@@ -558,6 +647,10 @@ void *realloc(void *oldptr, size_t size) {
     return newptr;
 }
 
+/* Perform realloc by malloc-ing a new pointer and copying the
+ * contents of the old pointer to the new location before returning
+ * the new pointer.
+ */
 void* relocate(void* oldptr, size_t oldsize, size_t size){
     void* newptr = malloc(size);
     //copy first oldSize bytes of oldptr to newptr
@@ -569,7 +662,7 @@ void* relocate(void* oldptr, size_t oldsize, size_t size){
 }
 
 /*
- * calloc - you may want to look at mm-naive.c
+ * calloc
  */
 void *calloc (size_t nmemb, size_t size) {
 //printf("calloc\t");
@@ -580,6 +673,7 @@ void *calloc (size_t nmemb, size_t size) {
     checkheap(1);
     return newptr;
 }
+
 // Returns 0 if no errors were found, otherwise returns the error
 int mm_checkheap(int verbose) {
     node *p, **listptr;
@@ -663,6 +757,9 @@ int check_flist(node* flist, char class, int* countptr){
     return 0;
 }
 
+/* Helper function used in debugging that displays the contents of the heap,
+ * Displays <header address>[<size> <allocated>] for each node.
+ * */
 void printheap(){
     node* n = prolog;
     while(in_heap(n)){
@@ -671,6 +768,11 @@ void printheap(){
     }
     printf("\n");
 }
+
+/* Helper function used in debugging that displays the contents of a free list
+ * specified by a size class.
+ * Displays <header addres>{<size> <allocated> <class>} for each node on the list.
+ */
 void printflist(char class){
     node* start, *list = get_list(class);
     start = list;
@@ -682,6 +784,10 @@ void printflist(char class){
     }
     printf("\n");
 }
+
+/* Helper function used in debugging that iterates through each size class and calls printflist
+ * on it.
+ */
 void printallflist(){
     int i;
     for(i=0; i<LISTBOUND; i++){
