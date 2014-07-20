@@ -293,6 +293,7 @@ static inline void delete(node* n){
  * malloc
  */
 void *malloc (size_t size) {
+//printf("malloc %zd", size);
     node *n;
     long res;
     char p;
@@ -332,6 +333,7 @@ void *malloc (size_t size) {
     epilog = (node*)((long)mem_heap_hi()-3);
     epilog->head = ALLOC;
     block_mark(n);
+//printf(" (b) %p\t", (void*) &n->prev);
     checkheap(1);
     return (void*) &n->prev;
 }
@@ -354,7 +356,7 @@ void* searchlist(node** list, size_t size){
                 m = next(m);
             }
             if((best - size) >= 16)
-                return carve(n, size, best - size);
+                return carve(n, size, best - size - DSIZE);
             return found(n);
         }
         n = next(n);
@@ -367,12 +369,13 @@ void* searchlist(node** list, size_t size){
 void* carve(node* n, size_t s0, size_t s1){
      node* m;
      delete(n);
-     n->head = s0 | ALLOC;
+     n->head = s0 | (n->head & (PFIXED|SZCLASS)) | ALLOC;
      block_mark(n);
      m = block_next(n);
      m->head = s1 | (m->head & (PFIXED|SZCLASS));
      block_mark(m);
      add(m);
+//printf(" (c) %p\t", (void*) &n->prev);
      checkheap(1);
      return &n->prev;
 }
@@ -423,7 +426,7 @@ static inline void* found(node *n){
     delete(n);
     n->head |= ALLOC;
     block_mark(n);
-    //TODO: see about marking next block
+//printf(" (f) %p\t", (void*) &n->prev);
     checkheap(1);
     return (void*) &n->prev;
 }
@@ -432,6 +435,7 @@ static inline void* found(node *n){
  * free
  */
 void free (void *ptr) {
+//printf("free %p\t",ptr);
     size_t size;
     node *next, *prev;
     if (ptr == NULL) {
@@ -447,12 +451,14 @@ void free (void *ptr) {
     if(block_free(next)){
         delete(next);
         if(block_free(prev)){
+//printf("coalesce both\t");
             delete(prev);
             size = get_combined_size3(prev, n, next);
             prev->head = size | (prev->head & METAMASK);
             block_mark(prev);
             add(prev);
         } else {
+//printf("coalesce next\t");
             size = get_combined_size2(n, next);
             n->head = size | (n->head & (PFIXED | SZCLASS));
             block_mark(n);
@@ -460,6 +466,7 @@ void free (void *ptr) {
         }
     } else {
         if(block_free(prev)){
+//printf("coalesce prev\t");
             delete(prev);
             size = get_combined_size2(prev, n);
             prev->head = size | (prev->head & METAMASK);
@@ -467,6 +474,7 @@ void free (void *ptr) {
             add(prev);
         }
         else{
+//printf("coalesce none\t");
             add(n);
         }
     }
@@ -494,6 +502,7 @@ static inline size_t get_combined_size2(const node* n, const node* m){
  * realloc - you may want to look at mm-naive.c
  */
 void *realloc(void *oldptr, size_t size) {
+//printf("realloc %p %zd\t", oldptr, size);
     void* newptr;
     size_t oldsize, newsz;
     node* old, *prev, *next;
