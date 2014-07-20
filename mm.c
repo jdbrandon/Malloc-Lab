@@ -409,7 +409,6 @@ int mm_init(void) {
  * malloc
  */
 void *malloc (size_t size) {
-//printf("malloc %zd\t", size);
     node *n;
     long res;
     char p;
@@ -419,7 +418,6 @@ void *malloc (size_t size) {
     if(size <= 12) size = 8;
     if(size<8)return NULL;
     p = get_class(size);
-//fprintf(stderr, "%d\n", p);
     n = searchlist(get_list_addr(p), size);
     if(n!=NULL) 
         return n;
@@ -448,7 +446,6 @@ void *malloc (size_t size) {
     epilog = (node*)((long)mem_heap_hi()-3);
     epilog->head = ALLOC;
     block_mark(n);
-//printf(" (b) %p\t", (void*) &n->prev);
     checkheap(1);
     return (void*) &n->prev;
 }
@@ -497,7 +494,6 @@ void* carve(node* n, size_t s0, size_t s1){
      m->head = s1 | (m->head & (PFIXED|SZCLASS));
      block_mark(m);
      add(m);
-//printf(" (c) %p\t", (void*) &n->prev);
      checkheap(1);
      return &n->prev;
 }
@@ -512,7 +508,6 @@ static inline void* found(node *n){
     delete(n);
     n->head |= ALLOC;
     block_mark(n);
-//printf(" (f) %p\t", (void*) &n->prev);
     checkheap(1);
     return (void*) &n->prev;
 }
@@ -521,7 +516,6 @@ static inline void* found(node *n){
  * free
  */
 void free (void *ptr) {
-//printf("free %p\t",ptr);
     size_t size;
     node *next, *prev;
     if (ptr == NULL) {
@@ -537,14 +531,12 @@ void free (void *ptr) {
     if(block_free(next)){
         delete(next);
         if(block_free(prev)){
-//printf("coalesce both\t");
             delete(prev);
             size = get_combined_size3(prev, n, next);
             prev->head = size | (prev->head & METAMASK);
             block_mark(prev);
             add(prev);
         } else {
-//printf("coalesce next\t");
             size = get_combined_size2(n, next);
             n->head = size | (n->head & (PFIXED | SZCLASS));
             block_mark(n);
@@ -552,7 +544,6 @@ void free (void *ptr) {
         }
     } else {
         if(block_free(prev)){
-//printf("coalesce prev\t");
             delete(prev);
             size = get_combined_size2(prev, n);
             prev->head = size | (prev->head & METAMASK);
@@ -560,7 +551,6 @@ void free (void *ptr) {
             add(prev);
         }
         else{
-//printf("coalesce none\t");
             add(n);
         }
     }
@@ -592,7 +582,6 @@ static inline size_t get_combined_size2(const node* n, const node* m){
  * realloc
  */
 void *realloc(void *oldptr, size_t size) {
-//printf("realloc %p %zd\t", oldptr, size);
     void* newptr;
     size_t oldsize, newsz;
     node* old, *prev, *next;
@@ -665,7 +654,6 @@ void* relocate(void* oldptr, size_t oldsize, size_t size){
  * calloc
  */
 void *calloc (size_t nmemb, size_t size) {
-//printf("calloc\t");
     void* newptr;
     checkheap(1);
     newptr = malloc(nmemb * size);
