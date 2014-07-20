@@ -2,10 +2,21 @@
  * mm.c
  * jdbrando - Jeff Brandon
  *
- * NOTE TO STUDENTS: Replace this header comment with your own header
- * comment that gives a full description of your solution.
- * Power of 2 size allocations.
- * first fit.
+ * My implementation of malloc uses a segregated freelist
+ * made up of circular linked lists. 
+ * Heap blocks all have a header but not all have a footer.
+ * Headers and footers (when present) account for 4 bytes each.
+ * By ommitting footers on smaller allocations overhead is reduced.
+ * Another way overhead is reduced is by taking advantage of knowing
+ * the heap is limited to 2^32 bytes for this assignment and storing
+ * free list pointers in 4 bytes and combining them with an offset when
+ * calculating addresses. For more information on this see the 
+ * documnetation on the node struct.
+ *
+ * The information necessary for traversing backwards in the heap
+ * for a block with no footer is stored in the header of the 
+ * next block by using two bit-flags. For more information on how this is
+ * managed see the documentation for block_prev()
  */
 
 #include <assert.h>
@@ -94,15 +105,19 @@ static inline char get_fixed_bucket_offset(const char);
 static inline size_t get_combined_size3(const node*, const node*, const node*);
 static inline size_t get_combined_size2(const node*, const node*);
 
+//general macro definitions
 #define WSIZE 4
 #define DSIZE 8
-#define ALLOC 1
-#define PFIXED 2
-#define SZCLASS 4
 #define METAMASK 7
 #define LISTBOUND 13
 #define LOOKAHEAD 10
 
+//bitpacking macros
+#define ALLOC 1
+#define PFIXED 2
+#define SZCLASS 4
+
+//free list and size class macros
 #define SIZEN 12
 #define SIZE15 11
 #define SIZE14 10 
@@ -117,6 +132,7 @@ static inline size_t get_combined_size2(const node*, const node*);
 #define SIZE5 1
 #define SIZE4 0
 
+//global free list declarations
 static node* flist4 = NULL;
 static node* flist5 = NULL;
 static node* flist6 = NULL;
@@ -130,21 +146,23 @@ static node* flist13 = NULL;
 static node* flist14 = NULL;
 static node* flist15 = NULL;
 static node* flistn = NULL;
-/* used to access free lists as if they were an array by taking advantage
+
+/* lists is used to access free lists as if they were an array by taking advantage
  * of the lists being adjacent in the data segment. The order of the flists
  * can be shifted around by the compiler but as long as the lists are retrieved
  * the same way throughout the entire program it makes no difference.
  */
 static node** lists = &flist4;
-static node* prolog;
-static node* epilog;
-/* To store the lower bound of the heap. Also serves as offset for 4 byte
+static node* prolog; //beginning of the heap
+static node* epilog; //last 4 bytes of the heap
+
+/* lbound is used to store the lower bound of the heap. Also serves as offset for 4 byte
  * pointers
  */
 static void* lbound;
 
 /* Free list manipulateion
- *
+ * -------------------------------------------------------
  * The following methods are used to maintain the free lists.
  * The free lists are implemented in a circular fashion so the 
  * lists should end where they begin.
