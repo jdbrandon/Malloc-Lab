@@ -299,10 +299,11 @@ void *malloc (size_t size) {
     char p;
     checkheap(1);  // Let's make sure the heap is ok!
     size = (size + 7) & ~7; //align size
-    if(size == 12) size = 8;
-    if(size == 20) size = 16;
+    if(size <= 20 && size > 12) size = 16;
+    if(size <= 12) size = 8;
     if(size<8)return NULL;
     p = get_class(size);
+//printf(": %d\n", p);
     n = searchlist(get_list_addr(p), size);
     if(n!=NULL) 
         return n;
@@ -343,7 +344,7 @@ void* searchlist(node** list, size_t size){
     size_t best, tmp;
     char count;
     start = n = *list;
-    if(n && (block_class(n) < SIZE8)) return found(n);
+    if(n && (block_class(n) < SIZE6)) return found(n);
     while(n){
         if((best = block_size(n)) >= size){
             count = 0;
@@ -385,11 +386,11 @@ static inline char get_class(const size_t size){
         return SIZE4;
     else if(size == 16)
         return SIZE5;
-    else if(size == 24)
+    else if(size <= 104)
         return SIZE6;
-    else if(size == 32)
+    else if(size <= 112)
         return SIZE7;
-    else if(size <= 96)
+    else if(size <= 120)
         return SIZE8;
     else if(size <= 160)
         return SIZE9;
@@ -571,6 +572,7 @@ void* relocate(void* oldptr, size_t oldsize, size_t size){
  * calloc - you may want to look at mm-naive.c
  */
 void *calloc (size_t nmemb, size_t size) {
+//printf("calloc\t");
     void* newptr;
     checkheap(1);
     newptr = malloc(nmemb * size);
