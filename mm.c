@@ -400,9 +400,9 @@ static inline char get_class(const size_t size){
         return SIZE11;
     else if(size <= 104)
         return SIZE12;
-    else if(size <= 504)
+    else if(size <= 304)
         return SIZE13;
-    else if(size <= 704)
+    else if(size <= 504)
         return SIZE14;
     else if(size <= 1000)
         return SIZE15;
