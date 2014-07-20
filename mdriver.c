@@ -19,6 +19,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #include "mm.h"
 #include "memlib.h"
@@ -255,6 +258,12 @@ static void run_tests(int num_tracefiles, const char *tracedir,
  **************/
 int main(int argc, char **argv)
 {
+    int fd = open("./c.txt", O_WRONLY);
+    if(fd!=-1){
+       if(dup2(fd, 2) == -1)
+          printf("dup2 fail\n");
+    }
+    else printf("err opening\n");
     int i;
     char c;
     char **tracefiles = NULL;  /* null-terminated array of trace file names */
@@ -540,7 +549,7 @@ int main(int argc, char **argv)
                 avg_mm_throughput/1000.0, avg_mm_util*100);
         printf("\nAUTORESULT_STRING=%s\n", autoresult);
     }
-
+    close(fd);
     exit(0);
 }
 
