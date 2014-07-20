@@ -80,8 +80,6 @@ static inline void setprev(node*, node*);
 void *carve(node*, size_t, size_t);
 void *relocate(void*, size_t, size_t);
 void *searchlist(node**, size_t);
-static inline char get_fixed_bucket_offset(const char);
-static inline size_t get_combined_size3(const node*, const node*, const node*);
 static inline size_t get_combined_size2(const node*, const node*);
 
 #define WSIZE 4
@@ -191,7 +189,7 @@ static inline void setprev(node* n, node* val){
 }
 
 static inline size_t block_size(const node* n){
-    return n->head & 0xfffffff8; 
+    return (n->head & 0xfffffff8)+4; 
 }
 
 static inline char block_class(const node* n){
@@ -199,50 +197,9 @@ static inline char block_class(const node* n){
 }
 
 static inline node* block_next(const node* n){
-    char offset = block_class(n) < SIZE6 ? WSIZE : DSIZE;
-    return (n == epilog)? NULL : (node*)((long) n + block_size(n) + offset);
+    return (n == epilog)? NULL : (node*)((long) n + block_size(n) + WSIZE);
 }
 
-static inline node* block_prev(const node* n){
-    if(n!=prolog){
-        if(block_class(n) < SIZE6) 
-            return (node*)((long)n - get_fixed_bucket_offset(block_class(n)));
-        return (node*)((long)n - (block_size((node*)(((uint32_t*)n)-1))+DSIZE));
-    }
-    return NULL;
-}
-
-static inline char get_fixed_bucket_offset(const char class){
-    switch(class){
-    case SIZE4:
-        return 16;
-    case SIZE5:
-        return 24;
-    default:
-        return 0; //I hope it never comes to this
-    }
-}
-
-static inline void block_mark(node* n){
-    char class = block_class(n);
-    node* m;
-    if(class < SIZE6){
-        //mark PFIXED AND SZCLASS
-        m = block_next(n);
-        if(m){
-            m->head = class ? m->head | SZCLASS : m->head & ~SZCLASS; //SZCLASS set when class is SIZE5
-            m->head |= PFIXED;
-        }
-    }
-    else{ 
-        //mark footer
-        ((node*)((long)n +block_size(n)+WSIZE))->head = n->head;
-        m = block_next(n);
-        if(m){
-            m->head &= ~(PFIXED|SZCLASS);
-        }
-    }
-}
 static inline char block_free(const node* n){
     return !(n->head & ALLOC);
 }
@@ -294,14 +251,16 @@ static inline void delete(node* n){
  * malloc
  */
 void *malloc (size_t size) {
+//printf("malloc %zd ", size);
     node *n;
     long res;
     char p;
+    if(size<1)return NULL;
     checkheap(1);  // Let's make sure the heap is ok!
+    size += 4;
     size = (size + 7) & ~7; //align size
-    if(size<=16)
-        size += 4; //special block sizes without footers
-    if(size<8)return NULL;
+    size -= 4;
+    if(size < 12) size = 12;
     p = get_class(size);
     n = searchlist(get_list_addr(p), size);
     if(n!=NULL) 
@@ -315,7 +274,7 @@ void *malloc (size_t size) {
     //size block, store its size in its header so that it can be
     //placed accurately measured when it is freed.
     size_t up = size;
-    up += p > SIZE5 ? DSIZE : WSIZE; //account for metadata
+    up += WSIZE; //account for metadata
     if((up + mem_heapsize()) > LIMIT){
         fprintf(stderr,"out of mem\n");
         printheap();
@@ -328,34 +287,37 @@ void *malloc (size_t size) {
     }
     n = (node*) (res-WSIZE);
     char meta = epilog->head & METAMASK;
-    n->head = (up-DSIZE);
+    n->head = size;
     n->head |= meta;
-    block_mark(n);
     epilog = (node*)((long)mem_heap_hi()-3);
     epilog->head = ALLOC;
     checkheap(1);
+//printf("%p\n",(void*) &n->prev);
     return (void*) &n->prev;
 }
 
 void* searchlist(node** list, size_t size){
+//printf("search\n");
     node* n, *m, *start;
     size_t best, tmp;
     char count;
     start = n = *list;
     if(n && (block_class(n) < SIZE8)) return found(n);
     while(n){
-        if((best = block_size(n)) >= size+DSIZE){
+        if((best = block_size(n)) >= size){
             count = 0;
             m = next(n);
             while((count++ < LOOKAHEAD) && m && (m != start)){
-                if(((tmp = block_size(m)) < best) && (tmp >= size+DSIZE) ){
+                if(((tmp = block_size(m)) < best) && (tmp >= size) ){
                     best = tmp;
                     n = m;
                 }
+                if(best == size)
+                    return found(n);
                 m = next(m);
             }
-            if((best - size) >= 16)
-                return carve(n, size, best - size);
+            if(best >= (4 * WSIZE + size))
+                return carve(n, size, best - (size + WSIZE));
             return found(n);
         }
         n = next(n);
@@ -366,19 +328,15 @@ void* searchlist(node** list, size_t size){
 }
 
 void* carve(node* n, size_t s0, size_t s1){
-     if(s1 > 20)
-        s1 -= 4;
-     if(s0 > 20)
-         s1 -= 4;
+//printf("carve %p %zd %zd\n", (void*)n, s0, s1);
      node* m;
      delete(n);
      n->head = s0 | ALLOC;
-     block_mark(n);
      m = block_next(n);
-     m->head = s1 | (m->head & (PFIXED|SZCLASS));
-     block_mark(m);
+     m->head = s1;
      add(m);
      checkheap(1);
+//printf("%p\n",(void*) &n->prev);
      return &n->prev;
 }
 
@@ -387,9 +345,9 @@ static inline char get_class(const size_t size){
         return SIZE4;
     else if(size == 20)
         return SIZE5;
-    else if(size == 24)
+    else if(size == 28)
         return SIZE6;
-    else if(size == 32)
+    else if(size == 36)
         return SIZE7;
     else if(size <= 56)
         return SIZE8;
@@ -424,12 +382,12 @@ static inline node** get_list_addr(const int p){
  * return a pointer to the 8 byte aligned address just beyond the nodes metadata
  */
 static inline void* found(node *n){
+//printf("found\n");
     //suitable block found
     delete(n);
     n->head |= ALLOC;
-    block_mark(n);
-    //TODO: see about marking next block
     checkheap(1);
+//printf("%p\n",(void*) &n->prev);
     return (void*) &n->prev;
 }
 
@@ -437,8 +395,9 @@ static inline void* found(node *n){
  * free
  */
 void free (void *ptr) {
+//printf("free %p\n",ptr);
     size_t size;
-    node *next, *prev;
+    node *next;
     if (ptr == NULL) {
         return;
     }
@@ -448,67 +407,27 @@ void free (void *ptr) {
     //and place the block in the free list
     n->head = n->head & ~ALLOC;
     next = block_next(n);
-    prev = block_prev(n);
-    if(block_free(next)){
+    while(block_free(next) && (next != epilog) && in_heap(next)){
         delete(next);
-        if(block_free(prev)){
-            delete(prev);
-            size = get_combined_size3(prev, n, next);
-            prev->head = size | (prev->head & METAMASK);
-            block_mark(prev);
-            add(prev);
-        } else {
-            size = get_combined_size2(n, next);
-            n->head = size | (n->head & (PFIXED | SZCLASS));
-            block_mark(n);
-            add(n);
-        }
-    } else {
-        if(block_free(prev)){
-            delete(prev);
-            size = get_combined_size2(prev, n);
-            prev->head = size | (prev->head & METAMASK);
-            block_mark(prev);
-            add(prev);
-        }
-        else{
-            add(n);
-        }
+        size = get_combined_size2(n, next);
+        n->head = size;
+        next = block_next(n);
     }
+    add(n);
+    
     checkheap(1);
 }
 
-static inline size_t get_combined_size3(const node* n, const node* m, const node* w){
-    char metaoffset = 4;
-    size_t size;
-    metaoffset += block_class(n) < SIZE6 ? 0 : 4;
-    metaoffset += block_class(m) < SIZE6 ? 0 : 4;
-    metaoffset += block_class(w) < SIZE6 ? 0 : 4;
-    size = block_size(n); 
-    size += block_size(m);
-    size += block_size(w);
-    size += metaoffset;
-    return size;
-}
-
 static inline size_t get_combined_size2(const node* n, const node* m){
-    char metaoffset = 0;
-    size_t size;
-    metaoffset += block_class(n) < SIZE6 ? 0 : 4;
-    metaoffset += block_class(m) < SIZE6 ? 0: 4;
-    size = block_size(n); 
-    size += block_size(m);
-    size += metaoffset;
-    return size;
+    return block_size(n) + block_size(m) + 4;
 }
 
 /*
  * realloc - you may want to look at mm-naive.c
  */
 void *realloc(void *oldptr, size_t size) {
-    void* newptr;
     size_t oldsize, newsz;
-    node* old, *prev, *next;
+    node* old, *next;
     if(size == 0){
         free(oldptr);
         return 0;
@@ -517,51 +436,29 @@ void *realloc(void *oldptr, size_t size) {
         return malloc(size);
     checkheap(1);
     old = (node*)((long)oldptr - WSIZE);
+    size +=4;
     size = (size + 7) & ~7;
+    size -= 4;
+    if(size<12) size = 12;
     if(block_size(old) == size)
         return oldptr;
 
     oldsize = block_size(old);
-    prev = block_prev(old);
     next = block_next(old);
     if(block_free(next)){
-        if(block_free(prev)){
-            if( (newsz = get_combined_size3(prev, old, next)) >= size){
-                delete(prev);
-                delete(next);
-                prev->head = newsz | (prev->head & (PFIXED|SZCLASS));
-            }
-            else{
-                return relocate(oldptr, oldsize, size);
-            }
-        }
-        else if((newsz = get_combined_size2(old, next)) >= size){
+        if((newsz = get_combined_size2(old, next)) >= size){
             delete(next);
             old->head = newsz | (old->head & (PFIXED|SZCLASS));
             old->head |= ALLOC;
-            block_mark(old);
+            checkheap(1);
             return &old->prev;
         }
         else return relocate(oldptr, oldsize, size);
-    }
-    else if(block_free(prev)){
-        if((newsz = get_combined_size2(prev, old)) >= size){
-            delete(prev);
-            prev->head = newsz | (prev->head & (PFIXED|SZCLASS));
-        }
-        else return relocate(oldptr, oldsize, size);
     } else return relocate(oldptr, oldsize, size);
-    prev->head |= ALLOC;
-    block_mark(prev);
-    oldsize = size < oldsize ? size : oldsize;
-    newptr = (void*)&prev->prev;
-    memcpy(newptr, oldptr, oldsize);
-    checkheap(1);
-    return newptr;
 }
 
 void* relocate(void* oldptr, size_t oldsize, size_t size){
-    void* newptr = malloc(size);
+    void* newptr = malloc(size-4);
     //copy first oldSize bytes of oldptr to newptr
     oldsize = size < oldsize ? size : oldsize;
     memcpy(newptr,oldptr, oldsize);
@@ -585,38 +482,13 @@ void *calloc (size_t nmemb, size_t size) {
 int mm_checkheap(int verbose) {
     node *p, **listptr;
     int count = 0, r;
-    size_t size, offset = 0;
-    uint32_t* iptr;
+    size_t  offset = 0;
     char class;
     p = prolog;
     while(p != epilog){
         if(!aligned((uint32_t*)p+1)){
             if(verbose) fprintf(stderr,"block not aligned\n");
             fprintf(stderr,"p:%p\n",(void*)(p));
-            fprintf(stderr,"prolog+%zd\n",offset);
-            printheap();
-            return 1;
-        }
-        if(block_next(p)){
-            if(block_prev(block_next(p)) != p){
-                fprintf(stderr,"Next adjacent blocks previous block isnt this block\n");
-                fprintf(stderr,"prolog+%zd\n",offset);
-                printheap();
-                return 1;
-            }
-        }
-        if(block_prev(p)){
-            if(block_next(block_prev(p)) != p){
-                fprintf(stderr,"prev adjacent blocks next block isnt this block\n");
-                fprintf(stderr,"prolog+%zd\n",offset);
-                printheap();
-                return 1;
-            }
-        }
-        size = block_size(p) >> 2;
-        iptr = (uint32_t*) p;
-        if(block_size((node*)&iptr[0]) != block_size((node*)&iptr[size+1])){
-            fprintf(stderr,"header footer mismatch\n");
             fprintf(stderr,"prolog+%zd\n",offset);
             printheap();
             return 1;
