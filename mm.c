@@ -389,21 +389,21 @@ static inline char get_class(const size_t size){
         return SIZE6;
     else if(size == 32)
         return SIZE7;
-    else if(size <= 56)
+    else if(size <= 96)
         return SIZE8;
-    else if(size <= 80)
+    else if(size <= 160)
         return SIZE9;
-    else if(size <= 104)
+    else if(size <= 200)
         return SIZE10;
-    else if(size <= 300)
+    else if(size <= 304)
         return SIZE11;
-    else if(size <= 500)
+    else if(size <= 400)
         return SIZE12;
-    else if(size <= 700)
+    else if(size <= 504)
         return SIZE13;
-    else if(size <= 900)
+    else if(size <= 704)
         return SIZE14;
-    else if(size <= 1100)
+    else if(size <= 1000)
         return SIZE15;
     else return SIZEN;
 }
