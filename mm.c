@@ -303,7 +303,7 @@ void *malloc (size_t size) {
     if(size <= 12) size = 8;
     if(size<8)return NULL;
     p = get_class(size);
-//printf(": %d\n", p);
+//fprintf(stderr, "%d\n", p);
     n = searchlist(get_list_addr(p), size);
     if(n!=NULL) 
         return n;
@@ -344,7 +344,7 @@ void* searchlist(node** list, size_t size){
     size_t best, tmp;
     char count;
     start = n = *list;
-    if(n && (block_class(n) < SIZE6)) return found(n);
+    if(n && (block_class(n) < SIZE11)) return found(n);
     while(n){
         if((best = block_size(n)) >= size){
             count = 0;
@@ -386,19 +386,19 @@ static inline char get_class(const size_t size){
         return SIZE4;
     else if(size == 16)
         return SIZE5;
-    else if(size <= 104)
+    else if(size == 24)
         return SIZE6;
-    else if(size <= 112)
+    else if(size <= 36)
         return SIZE7;
-    else if(size <= 120)
+    else if(size <= 40)
         return SIZE8;
-    else if(size <= 160)
+    else if(size <= 48)
         return SIZE9;
-    else if(size <= 200)
+    else if(size <= 56)
         return SIZE10;
-    else if(size <= 304)
+    else if(size <= 72)
         return SIZE11;
-    else if(size <= 400)
+    else if(size <= 104)
         return SIZE12;
     else if(size <= 504)
         return SIZE13;
