@@ -114,8 +114,7 @@ static inline size_t get_combined_size2(const node*, const node*);
 
 //bitpacking macros
 #define ALLOC 1
-#define PFIXED 2
-#define SZCLASS 4
+#define PFIXMASK 6
 
 //free list and size class macros
 #define SIZEN 12
@@ -298,18 +297,19 @@ static inline node* block_next(const node* n){
  * NOTE: there are two block classes that do not use a footer
  * to determine where the previous block begins. When one of these
  * blocks is set up in the heap it sets 2 bits in the header of the
- * next block PFIXED and SZCLASS. 
- *   PFIXED specifies that the previous block belongs to a fixed size
+ * next block that can be extraxted using PFIXMASK. 
+ *   PFIXMASK specifies that the previous block belongs to a fixed size
  *       class that has no footer.
- *   SZCLASS specifies one of 2 size classes the previous block belongs to
+ *   A switch statement on the size class extracted yeilds the block 
+ *       offset for that class.
  *
  * Using these flags the previous blocks header address is computed.
  * Otherwise, the previous block is located using a footer.
  */
 static inline node* block_prev(const node* n){
     if(n!=prolog){
-        if(n->head & PFIXED) 
-            return (node*)((long)n - get_fixed_bucket_offset(n->head & SZCLASS));
+        if(n->head & PFIXMASK) 
+            return (node*)((long)n - get_fixed_bucket_offset((n->head & PFIXMASK)>>1));
         return (node*)((long)n - (block_size((node*)(((uint32_t*)n)-1))+DSIZE));
     }
     return NULL;
@@ -318,11 +318,13 @@ static inline node* block_prev(const node* n){
 /* Gets the offset of a fixed size allocation class
  */
 static inline char get_fixed_bucket_offset(const char class){
-    switch(class >> 2){
-    case SIZE4:
+    switch(class){
+    case 1:
         return 16;
-    case SIZE5:
+    case 2:
         return 24;
+    case 3:
+        return 32;
     default:
         return 0; //I hope it never comes to this
     }
@@ -331,18 +333,17 @@ static inline char get_fixed_bucket_offset(const char class){
 /* In the general case this function marks the footer of a block to make it
  * identical to the block header.
  * However if the block belongs to a special fixed size class it doesn't mark
- * a footer and instead sets PFIXED and SZCLASS appropriately in the header of
+ * a footer and instead sets a size class of 2 bits appropriately in the header of
  * the next block.
  */
 static inline void block_mark(node* n){
     char class = block_class(n);
     node* m;
-    if(class < SIZE6){
-        //mark PFIXED AND SZCLASS
+    if(class < SIZE7){
+        //mark PFIXMASK
         m = block_next(n);
         if(m){
-            m->head = class ? m->head | SZCLASS : m->head & ~SZCLASS; //SZCLASS set when class is SIZE5
-            m->head |= PFIXED;
+            m->head =  (m->head & ~PFIXMASK) | ((class+1)<<1); 
         }
     }
     else{ 
@@ -350,7 +351,7 @@ static inline void block_mark(node* n){
         ((node*)((long)n +block_size(n)+WSIZE))->head = n->head;
         m = block_next(n);
         if(m){
-            m->head &= ~(PFIXED|SZCLASS);
+            m->head &= ~PFIXMASK;
         }
     }
 }
@@ -431,9 +432,10 @@ void *malloc (size_t size) {
     long res;
     char p;
     checkheap(1);  // Let's make sure the heap is ok!
-    size = (size + 7) & ~7; //align size
+    if(size <= 28 && size > 20) size = 24;
     if(size <= 20 && size > 12) size = 16;
     if(size <= 12) size = 8;
+    size = (size + 7) & ~7; //align size
     if(size<8)return NULL;
     p = get_class(size);
     n = searchlist(get_list_addr(p), size);
@@ -506,10 +508,10 @@ void* searchlist(node** list, size_t size){
 void* carve(node* n, size_t s0, size_t s1){
      node* m;
      delete(n);
-     n->head = s0 | (n->head & (PFIXED|SZCLASS)) | ALLOC;
+     n->head = s0 | (n->head & PFIXMASK) | ALLOC;
      block_mark(n);
      m = block_next(n);
-     m->head = s1 | (m->head & (PFIXED|SZCLASS));
+     m->head = s1 | (m->head & PFIXMASK);
      block_mark(m);
      add(m);
      checkheap(1);
@@ -556,7 +558,7 @@ void free (void *ptr) {
             add(prev);
         } else {
             size = get_combined_size2(n, next);
-            n->head = size | (n->head & (PFIXED | SZCLASS));
+            n->head = size | (n->head & PFIXMASK);
             block_mark(n);
             add(n);
         }
@@ -623,7 +625,7 @@ void *realloc(void *oldptr, size_t size) {
             if( (newsz = get_combined_size3(prev, old, next)) >= size){
                 delete(prev);
                 delete(next);
-                prev->head = newsz | (prev->head & (PFIXED|SZCLASS));
+                prev->head = newsz | (prev->head & PFIXMASK);
             }
             else{
                 return relocate(oldptr, oldsize, size);
@@ -631,7 +633,7 @@ void *realloc(void *oldptr, size_t size) {
         }
         else if((newsz = get_combined_size2(old, next)) >= size){
             delete(next);
-            old->head = newsz | (old->head & (PFIXED|SZCLASS));
+            old->head = newsz | (old->head & PFIXMASK);
             old->head |= ALLOC;
             block_mark(old);
             return &old->prev;
@@ -641,15 +643,16 @@ void *realloc(void *oldptr, size_t size) {
     else if(block_free(prev)){
         if((newsz = get_combined_size2(prev, old)) >= size){
             delete(prev);
-            prev->head = newsz | (prev->head & (PFIXED|SZCLASS));
+            prev->head = newsz | (prev->head & PFIXMASK);
         }
         else return relocate(oldptr, oldsize, size);
     } else return relocate(oldptr, oldsize, size);
     prev->head |= ALLOC;
-    block_mark(prev);
     oldsize = size < oldsize ? size : oldsize;
+    if(oldsize <= 24) oldsize +=4;
     newptr = (void*)&prev->prev;
     memcpy(newptr, oldptr, oldsize);
+    block_mark(prev);
     checkheap(1);
     return newptr;
 }
@@ -662,6 +665,7 @@ void* relocate(void* oldptr, size_t oldsize, size_t size){
     void* newptr = malloc(size);
     //copy first oldSize bytes of oldptr to newptr
     oldsize = size < oldsize ? size : oldsize;
+    if(oldsize <= 24) oldsize +=4;
     memcpy(newptr,oldptr, oldsize);
     free(oldptr);
     checkheap(1);
